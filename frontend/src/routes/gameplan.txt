@@ -1,0 +1,15 @@
+now imagine i wanna make a svelte frontend, what's the game plan, what layout should i have, coz i wanna have a proper full fledged and smooth and dynamic llm chat app with full flexibility and feature control. so it is gonna need to be smooth and intuitive, all while being fully easy to use and userfriendly.
+
+so mainly, it will be a single view application, a static view, we will have a sidebar to the left of view, all the right will be chat window. we will have a brand bar like nav bar in the top, very subtle. the side bar should have like buttons, like a list of chatlogs, then in the bottom a settings button, models page button, functions page button.
+
+settings button will expand the sidebar and display what's the current selected model, what are its features, and what are its current parameters, and how i can tweak them, like all will be sliders, so i will simply slide the parameters to my liking and then press save button so it will all be saved, and i can also save the current configs (which will be saved in local storage and also will automatically be downloaded so i can import if i incase clear the local storage), also after those settings, i can have theme settings where i can customize all the css color palette attributes like accent colors, page colors, etc. then after that, we can configure the system message which will be said to the llm at the beginning and save the current system message as a preset, we can have a list of all the saved presets, so we can simply switch between presets. 
+
+then in models page, we can see all the models we have, whats the selected model, whats its info, and we can also browse latest available models which we can download, and we should be able to simply download it. 
+
+then in functions page, we should be able to see all our functions, we should be able to make our own functions, search and download the publicly available functions. 
+
+then there should also be a button to hide side bar. 
+
+then in chat window, we should have quick buttons to select the tools, disable tools, disable thinking, change models, refresh context. 
+
+so this is the game plan
