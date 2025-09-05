@@ -44,158 +44,406 @@ class OllamaManager:
             "date_time": create_datetime_tool(),
         }
 
-    def get_available_tools(self) -> Dict[str, Dict[str, Any]]:
+    def list_models(self) -> Dict[str, Any]:
         """
-        Get all available tools.
+        List all available local models.
         
         Returns:
-            Dictionary of tool_name -> tool_definition
-        """
-        return self.available_tools.copy()
-    
-    def list_tool_names(self) -> List[str]:
-        """
-        Get list of available tool names.
-        
-        Returns:
-            List of tool names
-        """
-        return list(self.available_tools.keys())
-    
-    def add_tool(self, name: str, tool_definition: Dict[str, Any]) -> bool:
-        """
-        Add a custom tool to available tools.
-        
-        Args:
-            name: Name for the tool
-            tool_definition: Tool definition following OpenAI function calling format
-            
-        Returns:
-            True if tool was added successfully
+            Dictionary containing list of models
         """
         try:
-            # Validate tool definition
-            if not self._validate_tool_definition(tool_definition):
-                logger.error(f"Invalid tool definition for {name}")
-                return False
-                
-            self.available_tools[name] = tool_definition
-            logger.info(f"Added tool: {name}")
-            return True
+            return self.client.list()
+            
         except Exception as e:
-            logger.error(f"Error adding tool {name}: {e}")
-            return False
-    
-    def remove_tool(self, name: str) -> bool:
+            logger.error(f"Error listing models: {e}")
+            raise
+
+    def select_model(self, model_name: str) -> bool:
         """
-        Remove a tool from available tools.
+        Select a model to use for subsequent operations.
         
         Args:
-            name: Name of the tool to remove
+            model_name: Name of the model to select
             
         Returns:
-            True if tool was removed successfully
-        """
-        if name in self.available_tools:
-            del self.available_tools[name]
-            # Also remove from selected tools if present
-            self.selected_tools = [tool for tool in self.selected_tools if tool.get('function', {}).get('name') != name]
-            logger.info(f"Removed tool: {name}")
-            return True
-        else:
-            logger.error(f"Tool {name} not found")
-            return False
-    
-    def select_tools(self, tool_names: List[str]) -> bool:
-        """
-        Select tools to use in chat/generation.
-        
-        Args:
-            tool_names: List of tool names to select
-            
-        Returns:
-            True if all tools were selected successfully
-        """
-        selected = []
-        missing_tools = []
-        
-        for name in tool_names:
-            if name in self.available_tools:
-                selected.append(self.available_tools[name])
-            else:
-                missing_tools.append(name)
-        
-        if missing_tools:
-            logger.error(f"Tools not found: {missing_tools}")
-            logger.info(f"Available tools: {self.list_tool_names()}")
-            return False
-        
-        self.selected_tools = selected
-        logger.info(f"Selected tools: {tool_names}")
-        return True
-    
-    def get_selected_tools(self) -> List[Dict[str, Any]]:
-        """
-        Get currently selected tools.
-        
-        Returns:
-            List of selected tool definitions
-        """
-        return self.selected_tools.copy()
-    
-    def get_selected_tool_names(self) -> List[str]:
-        """
-        Get names of currently selected tools.
-        
-        Returns:
-            List of selected tool names
-        """
-        return [tool.get('function', {}).get('name', '') for tool in self.selected_tools]
-    
-    def clear_selected_tools(self):
-        """Clear all selected tools"""
-        self.selected_tools = []
-        logger.info("Cleared selected tools")
-    
-    def get_tool_info(self, tool_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get detailed information about a specific tool.
-        
-        Args:
-            tool_name: Name of the tool
-            
-        Returns:
-            Tool definition or None if not found
-        """
-        return self.available_tools.get(tool_name)
-    
-    def _validate_tool_definition(self, tool_def: Dict[str, Any]) -> bool:
-        """
-        Validate tool definition format.
-        
-        Args:
-            tool_def: Tool definition to validate
-            
-        Returns:
-            True if valid, False otherwise
+            True if model exists and was selected
         """
         try:
-            # Check required fields
-            if tool_def.get("type") != "function":
+            # Check if model exists
+            models = self.list_models()
+            available_models = [m['name'] for m in models.get('models', [])]
+            
+            if model_name in available_models:
+                self.current_model = model_name
+                logger.info(f"Selected model: {model_name}")
+                return True
+            else:
+                logger.error(f"Model {model_name} not found. Available: {available_models}")
                 return False
                 
-            function = tool_def.get("function", {})
-            if not function.get("name") or not function.get("description"):
-                return False
-                
-            # Check parameters structure
-            params = function.get("parameters", {})
-            if params.get("type") != "object":
-                return False
-                
-            return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error selecting model {model_name}: {e}")
             return False
+
+    def set_thinking_mode(self, enabled: bool, reasoning_level: str = "medium"):
+        """
+        Enable or disable thinking mode for gpt-oss models.
+        
+        Args:
+            enabled: Whether to enable thinking mode
+            reasoning_level: Level of reasoning ("low", "medium", "high")
+        """
+        if reasoning_level not in REASONING_LEVELS:
+            logger.warning(f"Invalid reasoning level: {reasoning_level}. Using 'medium'")
+            reasoning_level = "medium"
+            
+        self.thinking_mode = enabled
+        self.reasoning_level = reasoning_level
+        logger.info(f"Thinking mode: {enabled}, Level: {reasoning_level}")
+
+    def get_model_info(self, model_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get detailed information about a model.
+        
+        Args:
+            model_name: Model name (defaults to current model)
+            
+        Returns:
+            Model information
+        """
+        use_model = model_name or self.current_model
+        if not use_model:
+            raise ValueError("No model specified")
+            
+        return self.show_model(use_model, verbose=True)
+
+    def set_model_parameters(
+        self,
+        model_name: Optional[str] = None,
+        num_ctx: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repeat_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        num_predict: Optional[int] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Set model parameters by creating a custom model configuration.
+        
+        Args:
+            model_name: Base model name (defaults to current model)
+            num_ctx: Context window size (e.g., 4096, 8192, 32768)
+            temperature: Sampling temperature (0.0 to 2.0)
+            top_k: Top-k sampling parameter
+            top_p: Top-p sampling parameter
+            repeat_penalty: Repetition penalty
+            seed: Random seed for reproducible outputs
+            num_predict: Maximum tokens to predict
+            **kwargs: Additional model parameters
+            
+        Returns:
+            Dictionary of applied parameters
+        """
+        use_model = model_name or self.current_model
+        if not use_model:
+            raise ValueError("No model specified")
+        
+        # Build parameters dictionary
+        parameters = {}
+        
+        if num_ctx is not None:
+            parameters['num_ctx'] = num_ctx
+        if temperature is not None:
+            parameters['temperature'] = temperature
+        if top_k is not None:
+            parameters['top_k'] = top_k
+        if top_p is not None:
+            parameters['top_p'] = top_p
+        if repeat_penalty is not None:
+            parameters['repeat_penalty'] = repeat_penalty
+        if seed is not None:
+            parameters['seed'] = seed
+        if num_predict is not None:
+            parameters['num_predict'] = num_predict
+            
+        # Add any additional parameters
+        parameters.update(kwargs)
+        
+        logger.info(f"Set parameters for {use_model}: {parameters}")
+        return parameters
+
+    def chat_with_options(
+        self,
+        messages: List[Dict[str, str]],
+        num_ctx: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repeat_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        num_predict: Optional[int] = None,
+        stream: bool = False,
+        **kwargs
+    ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
+        """
+        Chat with specific model parameters.
+        
+        Args:
+            messages: Chat messages
+            num_ctx: Context window size
+            temperature: Sampling temperature
+            top_k: Top-k sampling
+            top_p: Top-p sampling  
+            repeat_penalty: Repetition penalty
+            seed: Random seed
+            num_predict: Max tokens to predict
+            stream: Stream response
+            **kwargs: Additional options
+            
+        Returns:
+            Chat response
+        """
+        if not self.current_model:
+            raise ValueError("No model selected")
+        
+        # Build options dictionary
+        options = {}
+        
+        if num_ctx is not None:
+            options['num_ctx'] = num_ctx
+        if temperature is not None:
+            options['temperature'] = temperature
+        if top_k is not None:
+            options['top_k'] = top_k
+        if top_p is not None:
+            options['top_p'] = top_p
+        if repeat_penalty is not None:
+            options['repeat_penalty'] = repeat_penalty
+        if seed is not None:
+            options['seed'] = seed
+        if num_predict is not None:
+            options['num_predict'] = num_predict
+            
+        # Add additional options
+        options.update(kwargs)
+        
+        try:
+            chat_kwargs = {
+                'model': self.current_model,
+                'messages': messages,
+                'stream': stream,
+                'options': options
+            }
+            
+            # Add thinking mode for gpt-oss models
+            if self.current_model and 'gpt-oss' in self.current_model and self.thinking_mode:
+                chat_kwargs['think'] = self.reasoning_level
+            
+            return self.client.chat(**chat_kwargs)
+            
+        except Exception as e:
+            logger.error(f"Error in chat with options: {e}")
+            raise
+
+    def generate_with_options(
+        self,
+        prompt: str,
+        num_ctx: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repeat_penalty: Optional[float] = None,
+        seed: Optional[int] = None,
+        num_predict: Optional[int] = None,
+        stream: bool = False,
+        **kwargs
+    ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
+        """
+        Generate with specific model parameters.
+        
+        Args:
+            prompt: Input prompt
+            num_ctx: Context window size
+            temperature: Sampling temperature
+            top_k: Top-k sampling
+            top_p: Top-p sampling
+            repeat_penalty: Repetition penalty
+            seed: Random seed
+            num_predict: Max tokens to predict
+            stream: Stream response
+            **kwargs: Additional options
+            
+        Returns:
+            Generation response
+        """
+        if not self.current_model:
+            raise ValueError("No model selected")
+        
+        # Build options dictionary
+        options = {}
+        
+        if num_ctx is not None:
+            options['num_ctx'] = num_ctx
+        if temperature is not None:
+            options['temperature'] = temperature
+        if top_k is not None:
+            options['top_k'] = top_k
+        if top_p is not None:
+            options['top_p'] = top_p
+        if repeat_penalty is not None:
+            options['repeat_penalty'] = repeat_penalty
+        if seed is not None:
+            options['seed'] = seed
+        if num_predict is not None:
+            options['num_predict'] = num_predict
+            
+        # Add additional options
+        options.update(kwargs)
+        
+        return self.generate(
+            prompt=prompt,
+            options=options,
+            stream=stream,
+            **kwargs
+        )
+
+    def create_custom_model(
+        self,
+        model_name: str,
+        base_model: str,
+        system_prompt: Optional[str] = None,
+        template: Optional[str] = None,
+        num_ctx: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repeat_penalty: Optional[float] = None,
+        **kwargs
+    ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
+        """
+        Create a custom model with specific parameters and system prompt.
+        
+        Args:
+            model_name: Name for the new model
+            base_model: Base model to extend from
+            system_prompt: Custom system prompt
+            template: Custom template
+            num_ctx: Context window size
+            temperature: Default temperature
+            top_k: Default top-k
+            top_p: Default top-p
+            repeat_penalty: Default repeat penalty
+            **kwargs: Additional parameters
+            
+        Returns:
+            Model creation response
+        """
+        # Build parameters dictionary
+        parameters = {}
+        
+        if num_ctx is not None:
+            parameters['num_ctx'] = num_ctx
+        if temperature is not None:
+            parameters['temperature'] = temperature
+        if top_k is not None:
+            parameters['top_k'] = top_k
+        if top_p is not None:
+            parameters['top_p'] = top_p
+        if repeat_penalty is not None:
+            parameters['repeat_penalty'] = repeat_penalty
+            
+        # Add additional parameters
+        parameters.update(kwargs)
+        
+        return self.create_model(
+            model=model_name,
+            from_model=base_model,
+            system=system_prompt,
+            template=template,
+            parameters=parameters
+        )
+
+    def get_context_info(self, model_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get context window information for a model.
+        
+        Args:
+            model_name: Model name (defaults to current model)
+            
+        Returns:
+            Context information including max context length
+        """
+        use_model = model_name or self.current_model
+        if not use_model:
+            raise ValueError("No model specified")
+        
+        try:
+            model_info = self.show_model(use_model, verbose=True)
+            context_info = {}
+            
+            # Extract context information from model info
+            if 'model_info' in model_info:
+                model_details = model_info['model_info']
+                
+                # Look for context length in various fields
+                for key in ['llama.context_length', 'context_length', 'n_ctx']:
+                    if key in model_details:
+                        context_info['max_context_length'] = model_details[key]
+                        break
+                        
+                # Add other relevant info
+                context_info.update({
+                    'model_name': use_model,
+                    'parameter_size': model_info.get('details', {}).get('parameter_size', 'Unknown'),
+                    'family': model_info.get('details', {}).get('family', 'Unknown')
+                })
+                
+            return context_info
+            
+        except Exception as e:
+            logger.error(f"Error getting context info for {use_model}: {e}")
+            return {'error': str(e)}
+
+    def _build_system_message(self, custom_message: Optional[str] = None) -> str:
+        """
+        Build system message for gpt-oss models.
+        
+        Args:
+            custom_message: Custom system message
+            
+        Returns:
+            System message string
+        """
+        if custom_message:
+            return custom_message
+            
+        if self.current_model and 'gpt-oss' in self.current_model:
+            return "You are a helpful AI assistant with reasoning capabilities. Think step by step when solving problems."
+        
+        return "You are a helpful AI assistant."
+
+    def _clean_tool_response(self, response: str) -> str:
+        """Clean tool response for parsing"""
+        # Remove common formatting issues
+        response = response.strip()
+        response = response.replace('\\n', '\n').replace('\\"', '"')
+        return response
+
+    def _parse_gpt_oss_tool_call(self, response: str) -> Optional[Dict[str, Any]]:
+        """Parse GPT-OSS tool call format"""
+        try:
+            # Try to parse as JSON
+            parsed = json.loads(response)
+            
+            # Check if it's a tool call format
+            if isinstance(parsed, dict) and 'function' in parsed:
+                return parsed
+                
+            return None
+        except json.JSONDecodeError:
+            return None
 
     def chat(
         self, 
@@ -355,328 +603,548 @@ class OllamaManager:
             logger.error(f"Error in async chat: {e}")
             raise
 
-    def get_model_info(self) -> Dict[str, Any]:
+    def generate(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        suffix: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        format: Optional[Union[str, Dict[str, Any]]] = None,
+        options: Optional[Dict[str, Any]] = None,
+        system: Optional[str] = None,
+        template: Optional[str] = None,
+        stream: bool = False,
+        raw: bool = False,
+        context: Optional[List[int]] = None,
+        keep_alive: Optional[Union[str, int]] = None
+    ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """
-        Get information about the current model and settings.
-        
-        Returns:
-            Dictionary with current model info and settings
-        """
-        return {
-            'current_model': self.current_model,
-            'thinking_mode': self.thinking_mode,
-            'reasoning_level': self.reasoning_level,
-            'server_host': self.host,
-            'is_gpt_oss': self.is_gpt_oss_model(),
-            'available_tools': self.list_tool_names(),
-            'selected_tools': self.get_selected_tool_names()
-        }
-
-    def set_server_url(self, host: str):
-        """Change the Ollama server URL"""
-        self.host = host
-        self.client = Client(host=host)
-        self.async_client = AsyncClient(host=host)
-        
-    def list_models(self) -> List[Dict[str, Any]]:
-        """
-        List all available models on the Ollama server.
-        
-        Returns:
-            List of model dictionaries with model information
-        """
-        try:
-            response = self.client.list()
-            models = response.get('models', [])
-            
-            # Process the models list
-            model_list = []
-            for model in models:
-                try:
-                    model_dict = {}
-                    
-                    if isinstance(model, dict):
-                        # Direct dictionary - use as is
-                        model_dict = model.copy()
-                    else:
-                        # Object with attributes - extract them
-                        # Try common attributes that Ollama model objects have
-                        for attr in ['name', 'model', 'modified_at', 'size', 'digest', 'details']:
-                            if hasattr(model, attr):
-                                value = getattr(model, attr)
-                                # Handle datetime objects
-                                if hasattr(value, 'isoformat'):
-                                    model_dict[attr] = value.isoformat()
-                                elif hasattr(value, '__dict__'):
-                                    # Handle nested objects (like details)
-                                    model_dict[attr] = value.__dict__ if hasattr(value, '__dict__') else str(value)
-                                else:
-                                    model_dict[attr] = value
-                
-                    # Ensure we have at least a name field
-                    if not model_dict.get('name'):
-                        # Try different ways to get the model name
-                        if hasattr(model, 'name'):
-                            model_dict['name'] = str(model.name)
-                        elif hasattr(model, 'model'):
-                            model_dict['name'] = str(model.model)
-                        elif isinstance(model, dict) and 'name' in model:
-                            model_dict['name'] = model['name']
-                        elif isinstance(model, dict) and 'model' in model:
-                            model_dict['name'] = model['model']
-                        else:
-                            model_dict['name'] = str(model)
-                
-                    # Add the processed model to our list
-                    if model_dict:
-                        model_list.append(model_dict)
-                        
-                except Exception as model_error:
-                    logger.warning(f"Error processing individual model: {model_error}")
-                    # Last resort - try to extract just the string representation
-                    try:
-                        fallback_dict = {'name': str(model)}
-                        if hasattr(model, 'size'):
-                            fallback_dict['size'] = getattr(model, 'size')
-                        if hasattr(model, 'modified_at'):
-                            modified = getattr(model, 'modified_at')
-                            fallback_dict['modified_at'] = modified.isoformat() if hasattr(modified, 'isoformat') else str(modified)
-                        model_list.append(fallback_dict)
-                    except Exception:
-                        logger.error(f"Failed to process model completely: {model}")
-                        model_list.append({'name': 'Unknown'})
-        
-            logger.info(f"Found {len(model_list)} models")
-            for model in model_list:
-                logger.debug(f"Model: {model.get('name', 'Unknown')} - {model}")
-        
-            return model_list
-        
-        except Exception as e:
-            logger.error(f"Error listing models: {e}")
-            return []
-
-    def select_model(self, model_name: str) -> bool:
-        """
-        Select a model to use for chat/generation.
+        Generate a completion for a given prompt.
         
         Args:
-            model_name: Name of the model to select
+            prompt: The prompt to generate a response for
+            model: Model name to use (defaults to current model)
+            suffix: Text after the model response
+            images: List of base64-encoded images for multimodal models
+            format: Format to return response in ("json" or JSON schema)
+            options: Additional model parameters
+            system: System message (overrides Modelfile)
+            template: Prompt template (overrides Modelfile)
+            stream: Stream the response
+            raw: Skip formatting/templating
+            context: Context from previous request
+            keep_alive: How long to keep model loaded
             
         Returns:
-            True if model exists and is selected, False otherwise
+            Generation response or stream generator
         """
-        try:
-            models = self.list_models()
-            available_models = set()
-            
-            for model in models:
-                # Get both 'name' and 'model' fields as they might be the same
-                name = model.get('name', '')
-                model_field = model.get('model', '')
-                
-                if name:
-                    available_models.add(name)
-                if model_field and model_field != name:
-                    available_models.add(model_field)
+        use_model = model or self.current_model
+        if not use_model:
+            raise ValueError("No model specified. Use model parameter or select_model() first.")
         
-            logger.info(f"Available models: {sorted(available_models)}")
+        try:
+            kwargs = {
+                'model': use_model,
+                'prompt': prompt,
+                'stream': stream
+            }
             
-            if model_name in available_models:
-                self.current_model = model_name
-                logger.info(f"Selected model: {model_name}")
-                return True
-            else:
-                logger.error(f"Model '{model_name}' not found")
-                logger.info(f"Available models: {sorted(available_models)}")
-                return False
+            if suffix is not None:
+                kwargs['suffix'] = suffix
+            if images is not None:
+                kwargs['images'] = images
+            if format is not None:
+                kwargs['format'] = format
+            if options is not None:
+                kwargs['options'] = options
+            if system is not None:
+                kwargs['system'] = system
+            if template is not None:
+                kwargs['template'] = template
+            if raw:
+                kwargs['raw'] = raw
+            if context is not None:
+                kwargs['context'] = context
+            if keep_alive is not None:
+                kwargs['keep_alive'] = keep_alive
+            
+            # Add thinking mode for gpt-oss models
+            if use_model and 'gpt-oss' in use_model and self.thinking_mode:
+                kwargs['think'] = self.reasoning_level
+            
+            return self.client.generate(**kwargs)
             
         except Exception as e:
-            logger.error(f"Error selecting model: {e}")
+            logger.error(f"Error in generate: {e}")
+            raise
+
+    async def generate_async(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        suffix: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        format: Optional[Union[str, Dict[str, Any]]] = None,
+        options: Optional[Dict[str, Any]] = None,
+        system: Optional[str] = None,
+        template: Optional[str] = None,
+        stream: bool = False,
+        raw: bool = False,
+        context: Optional[List[int]] = None,
+        keep_alive: Optional[Union[str, int]] = None
+    ) -> Union[Dict[str, Any], AsyncGenerator[Dict[str, Any], None]]:
+        """Async version of generate method"""
+        use_model = model or self.current_model
+        if not use_model:
+            raise ValueError("No model specified. Use model parameter or select_model() first.")
+        
+        try:
+            kwargs = {
+                'model': use_model,
+                'prompt': prompt,
+                'stream': stream
+            }
+            
+            if suffix is not None:
+                kwargs['suffix'] = suffix
+            if images is not None:
+                kwargs['images'] = images
+            if format is not None:
+                kwargs['format'] = format
+            if options is not None:
+                kwargs['options'] = options
+            if system is not None:
+                kwargs['system'] = system
+            if template is not None:
+                kwargs['template'] = template
+            if raw:
+                kwargs['raw'] = raw
+            if context is not None:
+                kwargs['context'] = context
+            if keep_alive is not None:
+                kwargs['keep_alive'] = keep_alive
+            
+            # Add thinking mode for gpt-oss models
+            if use_model and 'gpt-oss' in use_model and self.thinking_mode:
+                kwargs['think'] = self.reasoning_level
+            
+            return await self.async_client.generate(**kwargs)
+            
+        except Exception as e:
+            logger.error(f"Error in async generate: {e}")
+            raise
+
+    def create_model(
+        self,
+        model: str,
+        from_model: Optional[str] = None,
+        files: Optional[Dict[str, str]] = None,
+        adapters: Optional[Dict[str, str]] = None,
+        template: Optional[str] = None,
+        license: Optional[Union[str, List[str]]] = None,
+        system: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        stream: bool = True,
+        quantize: Optional[str] = None
+    ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
+        """
+        Create a model from another model, safetensors directory, or GGUF file.
+        
+        Args:
+            model: Name of the model to create
+            from_model: Name of existing model to create from
+            files: Dictionary of file names to SHA256 digests
+            adapters: Dictionary of LORA adapter files
+            template: Prompt template for the model
+            license: License(s) for the model
+            system: System prompt for the model
+            parameters: Model parameters
+            messages: Message objects for conversation
+            stream: Stream the response
+            quantize: Quantization type (e.g., "q4_K_M", "q8_0")
+            
+        Returns:
+            Creation response or stream generator
+        """
+        try:
+            kwargs = {
+                'model': model,
+                'stream': stream
+            }
+            
+            if from_model is not None:
+                kwargs['from'] = from_model
+            if files is not None:
+                kwargs['files'] = files
+            if adapters is not None:
+                kwargs['adapters'] = adapters
+            if template is not None:
+                kwargs['template'] = template
+            if license is not None:
+                kwargs['license'] = license
+            if system is not None:
+                kwargs['system'] = system
+            if parameters is not None:
+                kwargs['parameters'] = parameters
+            if messages is not None:
+                kwargs['messages'] = messages
+            if quantize is not None:
+                kwargs['quantize'] = quantize
+            
+            return self.client.create(**kwargs)
+            
+        except Exception as e:
+            logger.error(f"Error creating model: {e}")
+            raise
+
+    def show_model(self, model: str, verbose: bool = False) -> Dict[str, Any]:
+        """
+        Show information about a model including details, modelfile, template, etc.
+        
+        Args:
+            model: Name of the model to show
+            verbose: Return full data for verbose response fields
+            
+        Returns:
+            Model information dictionary
+        """
+        try:
+            kwargs = {'model': model}
+            if verbose:
+                kwargs['verbose'] = verbose
+                
+            return self.client.show(**kwargs)
+            
+        except Exception as e:
+            logger.error(f"Error showing model {model}: {e}")
+            raise
+
+    def copy_model(self, source: str, destination: str) -> bool:
+        """
+        Copy a model to create a new model with another name.
+        
+        Args:
+            source: Name of the source model
+            destination: Name of the destination model
+            
+        Returns:
+            True if successful
+        """
+        try:
+            self.client.copy(source=source, destination=destination)
+            logger.info(f"Copied model {source} to {destination}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error copying model {source} to {destination}: {e}")
             return False
-    
-    def get_current_model(self) -> Optional[str]:
-        """Get the currently selected model"""
-        return self.current_model
-    
-    def set_thinking_mode(self, enabled: bool):
+
+    def delete_model(self, model: str) -> bool:
         """
-        Enable or disable thinking mode for gpt-oss models.
+        Delete a model and its data.
         
         Args:
-            enabled: True to enable thinking mode, False to disable
-        """
-        self.thinking_mode = enabled
-        logger.info(f"Thinking mode {'enabled' if enabled else 'disabled'}")
-    
-    def set_reasoning_level(self, level: str):
-        """
-        Set reasoning level for gpt-oss models.
-        
-        Args:
-            level: 'low', 'medium', or 'high'
-        """
-        if level.lower() in ['low', 'medium', 'high']:
-            self.reasoning_level = level.lower()
-            logger.info(f"Reasoning level set to: {level}")
-        else:
-            logger.error("Invalid reasoning level. Use 'low', 'medium', or 'high'")
-    
-    def _build_system_message(self, custom_system: Optional[str] = None) -> str:
-        """Build system message - simplified for GPT-OSS"""
-        if custom_system:
-            return custom_system
-        elif self.current_model and 'gpt-oss' in self.current_model:
-            # Simple system message for gpt-oss - no over-engineering
-            return "You are a helpful assistant."
-        else:
-            return "You are a helpful assistant."
-    
-    def is_gpt_oss_model(self, model_name: Optional[str] = None) -> bool:
-        """
-        Check if the current or specified model is a gpt-oss model.
-        
-        Args:
-            model_name: Model name to check (defaults to current model)
+            model: Name of the model to delete
             
         Returns:
-            True if it's a gpt-oss model
-        """
-        model = model_name or self.current_model
-        return model is not None and 'gpt-oss' in model.lower()
-
-    def _parse_gpt_oss_tool_call(self, cleaned_response: str) -> Optional[Dict[str, Any]]:
-        """Parse cleaned response into a tool call structure"""
-        try:
-            # Try to parse as JSON
-            if cleaned_response.strip().startswith('{'):
-                data = json.loads(cleaned_response)
-                
-                # Check if it looks like function arguments and match with available tools
-                for tool in self.selected_tools:
-                    func_name = tool.get('function', {}).get('name', '')
-                    params = tool.get('function', {}).get('parameters', {}).get('properties', {})
-                    
-                    # Check if the data matches this tool's parameters
-                    if any(param_name in data for param_name in params.keys()):
-                        return {
-                            'id': 'call_1',
-                            'type': 'function',
-                            'function': {
-                                'name': func_name,
-                                'arguments': data
-                            }
-                        }
-                
-                # Fallback to hardcoded checks for common tools
-                if 'expression' in data:  # Calculator tool
-                    return {
-                        'id': 'call_1',
-                        'type': 'function',
-                        'function': {
-                            'name': 'calculate',
-                            'arguments': data
-                        }
-                    }
-                elif 'city' in data:  # Weather tool
-                    return {
-                        'id': 'call_1',
-                        'type': 'function',
-                        'function': {
-                            'name': 'get_weather',
-                            'arguments': data
-                        }
-                    }
-                elif 'query' in data:  # Web search tool
-                    return {
-                        'id': 'call_1',
-                        'type': 'function',
-                        'function': {
-                            'name': 'web_search',
-                            'arguments': data
-                        }
-                    }
-                    
-            return None
-            
-        except json.JSONDecodeError:
-            return None
-
-    def _clean_tool_response(self, response_text):
-        """Clean the response text by removing special tokens that interfere with JSON parsing"""
-        if not response_text:
-            return response_text
-        
-        # Remove everything after the first occurrence of special tokens
-        special_tokens = ['<|call|>', '<|channel|>', '<|message|>', '<|constrain|>', '<|start|>', '<|end|>']
-        
-        for token in special_tokens:
-            if token in response_text:
-                response_text = response_text.split(token)[0]
-                break
-        
-        # Try to extract valid JSON from the beginning
-        response_text = response_text.strip()
-        
-        # Find the end of the first complete JSON object
-        if response_text.startswith('{'):
-            brace_count = 0
-            json_end = -1
-            in_string = False
-            escape_next = False
-            
-            for i, char in enumerate(response_text):
-                if escape_next:
-                    escape_next = False
-                    continue
-                if char == '\\':
-                    escape_next = True
-                    continue
-                if char == '"' and not escape_next:
-                    in_string = not in_string
-                    continue
-                if not in_string:
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            json_end = i + 1
-                            break
-        
-            if json_end > 0:
-                response_text = response_text[:json_end]
-    
-        return response_text
-
-    def debug_models_raw(self) -> Dict[str, Any]:
-        """
-        Debug method to see the raw models response from Ollama.
-        
-        Returns:
-            Raw response from Ollama API
+            True if successful
         """
         try:
-            response = self.client.list()
-            logger.info(f"Raw response type: {type(response)}")
-            logger.info(f"Raw response: {response}")
-            
-            if hasattr(response, 'models'):
-                models = response.models
-                logger.info(f"Models type: {type(models)}")
-                logger.info(f"Models length: {len(models) if hasattr(models, '__len__') else 'No length'}")
-                
-                for i, model in enumerate(models):
-                    logger.info(f"Model {i} type: {type(model)}")
-                    logger.info(f"Model {i} dir: {dir(model)}")
-                    logger.info(f"Model {i} dict: {model.__dict__ if hasattr(model, '__dict__') else 'No __dict__'}")
-                    if i >= 2:  # Only show first 3 models for debugging
-                        break
-            
-            return response.__dict__ if hasattr(response, '__dict__') else {'raw': str(response)}
+            self.client.delete(model=model)
+            logger.info(f"Deleted model {model}")
+            return True
             
         except Exception as e:
-            logger.error(f"Error in debug_models_raw: {e}")
+            logger.error(f"Error deleting model {model}: {e}")
+            return False
+
+    def pull_model(
+        self,
+        model: str,
+        insecure: bool = False,
+        stream: bool = True
+    ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
+        """
+        Download a model from the ollama library.
+        
+        Args:
+            model: Name of the model to pull
+            insecure: Allow insecure connections
+            stream: Stream the response
+            
+        Returns:
+            Pull response or stream generator
+        """
+        try:
+            kwargs = {
+                'model': model,
+                'stream': stream
+            }
+            
+            if insecure:
+                kwargs['insecure'] = insecure
+            
+            return self.client.pull(**kwargs)
+            
+        except Exception as e:
+            logger.error(f"Error pulling model {model}: {e}")
+            raise
+
+    def push_model(
+        self,
+        model: str,
+        insecure: bool = False,
+        stream: bool = True
+    ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
+        """
+        Upload a model to a model library.
+        
+        Args:
+            model: Name of the model to push (format: <namespace>/<model>:<tag>)
+            insecure: Allow insecure connections
+            stream: Stream the response
+            
+        Returns:
+            Push response or stream generator
+        """
+        try:
+            kwargs = {
+                'model': model,
+                'stream': stream
+            }
+            
+            if insecure:
+                kwargs['insecure'] = insecure
+            
+            return self.client.push(**kwargs)
+            
+        except Exception as e:
+            logger.error(f"Error pushing model {model}: {e}")
+            raise
+
+    def generate_embeddings(
+        self,
+        input_text: Union[str, List[str]],
+        model: Optional[str] = None,
+        truncate: bool = True,
+        options: Optional[Dict[str, Any]] = None,
+        keep_alive: Optional[Union[str, int]] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate embeddings from a model.
+        
+        Args:
+            input_text: Text or list of text to generate embeddings for
+            model: Model name to use (defaults to current model)
+            truncate: Truncate input to fit context length
+            options: Additional model parameters
+            keep_alive: How long to keep model loaded
+            
+        Returns:
+            Embeddings response
+        """
+        use_model = model or self.current_model
+        if not use_model:
+            raise ValueError("No model specified. Use model parameter or select_model() first.")
+        
+        try:
+            kwargs = {
+                'model': use_model,
+                'input': input_text,
+                'truncate': truncate
+            }
+            
+            if options is not None:
+                kwargs['options'] = options
+            if keep_alive is not None:
+                kwargs['keep_alive'] = keep_alive
+            
+            return self.client.embed(**kwargs)
+            
+        except Exception as e:
+            logger.error(f"Error generating embeddings: {e}")
+            raise
+
+    def list_running_models(self) -> Dict[str, Any]:
+        """
+        List models that are currently loaded into memory.
+        
+        Returns:
+            Dictionary containing list of running models
+        """
+        try:
+            return self.client.ps()
+            
+        except Exception as e:
+            logger.error(f"Error listing running models: {e}")
+            raise
+
+    def get_version(self) -> Dict[str, str]:
+        """
+        Get Ollama version information.
+        
+        Returns:
+            Version information dictionary
+        """
+        try:
+            # Direct HTTP request since ollama client might not have version method
+            import requests
+            response = requests.get(f"{self.host}/api/version")
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error(f"Error getting version: {e}")
+            raise
+
+    def check_blob_exists(self, digest: str) -> bool:
+        """
+        Check if a blob exists on the server.
+        
+        Args:
+            digest: SHA256 digest of the blob
+            
+        Returns:
+            True if blob exists
+        """
+        try:
+            import requests
+            response = requests.head(f"{self.host}/api/blobs/{digest}")
+            return response.status_code == 200
+            
+        except Exception as e:
+            logger.error(f"Error checking blob {digest}: {e}")
+            return False
+
+    def push_blob(self, file_path: str, digest: str) -> bool:
+        """
+        Push a file to create a blob on the server.
+        
+        Args:
+            file_path: Path to the file to upload
+            digest: Expected SHA256 digest of the file
+            
+        Returns:
+            True if successful
+        """
+        try:
+            import requests
+            with open(file_path, 'rb') as f:
+                response = requests.post(
+                    f"{self.host}/api/blobs/{digest}",
+                    data=f,
+                    headers={'Content-Type': 'application/octet-stream'}
+                )
+            response.raise_for_status()
+            logger.info(f"Successfully pushed blob {digest}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error pushing blob {digest}: {e}")
+            return False
+
+    def load_model(self, model: str) -> bool:
+        """
+        Load a model into memory.
+        
+        Args:
+            model: Name of the model to load
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Load model by sending empty prompt to generate endpoint
+            self.client.generate(model=model, prompt="")
+            logger.info(f"Loaded model {model}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error loading model {model}: {e}")
+            return False
+
+    def unload_model(self, model: str) -> bool:
+        """
+        Unload a model from memory.
+        
+        Args:
+            model: Name of the model to unload
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Unload model by setting keep_alive to 0
+            self.client.generate(model=model, prompt="", keep_alive=0)
+            logger.info(f"Unloaded model {model}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error unloading model {model}: {e}")
+            return False
+
+    # Legacy embedding method for compatibility
+    def embeddings(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None,
+        keep_alive: Optional[Union[str, int]] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate embeddings (legacy method - use generate_embeddings instead).
+        
+        Args:
+            prompt: Text to generate embeddings for
+            model: Model name to use
+            options: Additional model parameters
+            keep_alive: How long to keep model loaded
+            
+        Returns:
+            Embeddings response
+        """
+        try:
+            import requests
+            use_model = model or self.current_model
+            if not use_model:
+                raise ValueError("No model specified")
+            
+            payload = {
+                'model': use_model,
+                'prompt': prompt
+            }
+            
+            if options is not None:
+                payload['options'] = options
+            if keep_alive is not None:
+                payload['keep_alive'] = keep_alive
+            
+            response = requests.post(f"{self.host}/api/embeddings", json=payload)
+            response.raise_for_status()
+            return response.json()
+            
+        except Exception as e:
+            logger.error(f"Error generating embeddings (legacy): {e}")
+            raise
+
+    def get_server_info(self) -> Dict[str, Any]:
+        """
+        Get comprehensive server information including version and running models.
+        
+        Returns:
+            Server information dictionary
+        """
+        try:
+            info = {}
+            info['version'] = self.get_version()
+            info['running_models'] = self.list_running_models()
+            info['available_models'] = self.list_models()
+            info['server_host'] = self.host
+            return info
+            
+        except Exception as e:
+            logger.error(f"Error getting server info: {e}")
             return {'error': str(e)}
 
 # Convenience functions for direct usage
@@ -816,6 +1284,42 @@ def create_datetime_tool() -> Dict[str, Any]:
         }
     }
 
+# Additional constants for model parameters
+MODEL_PARAMETERS = {
+    'num_ctx': 'Context window size (tokens)',
+    'temperature': 'Sampling temperature (0.0-2.0)',
+    'top_k': 'Top-k sampling parameter',
+    'top_p': 'Top-p sampling parameter (0.0-1.0)',
+    'repeat_penalty': 'Repetition penalty (1.0+)',
+    'seed': 'Random seed for reproducible outputs',
+    'num_predict': 'Maximum tokens to predict',
+    'num_keep': 'Number of tokens to keep from prompt',
+    'stop': 'Stop sequences',
+    'min_p': 'Minimum probability threshold',
+    'typical_p': 'Typical probability mass',
+    'repeat_last_n': 'Tokens to consider for repetition penalty',
+    'presence_penalty': 'Presence penalty',
+    'frequency_penalty': 'Frequency penalty',
+    'penalize_newline': 'Penalize newlines in output',
+    'numa': 'Use NUMA optimization',
+    'num_batch': 'Batch size for processing',
+    'num_gpu': 'Number of GPUs to use',
+    'main_gpu': 'Main GPU to use',
+    'use_mmap': 'Use memory mapping',
+    'num_thread': 'Number of threads to use'
+}
+
+# Common context window sizes
+CONTEXT_SIZES = {
+    2048: "2K tokens",
+    4096: "4K tokens", 
+    8192: "8K tokens",
+    16384: "16K tokens",
+    32768: "32K tokens",
+    65536: "64K tokens",
+    131072: "128K tokens"
+}
+
 # Constants for available tools
 DEFAULT_TOOLS = {
     "weather": "Get weather information for cities",
@@ -833,3 +1337,28 @@ GPT_OSS_MODELS = {
 }
 
 REASONING_LEVELS = ["low", "medium", "high"]
+
+# Additional constants for quantization types
+QUANTIZATION_TYPES = {
+    "q4_K_M": "Q4_K_M (Recommended)",
+    "q4_K_S": "Q4_K_S",
+    "q8_0": "Q8_0 (Recommended)",
+    "q4_0": "Q4_0",
+    "q4_1": "Q4_1",
+    "q5_0": "Q5_0",
+    "q5_1": "Q5_1",
+    "q2_K": "Q2_K",
+    "q3_K_S": "Q3_K_S",
+    "q3_K_M": "Q3_K_M",
+    "q3_K_L": "Q3_K_L",
+    "q4_K": "Q4_K",
+    "q5_K_S": "Q5_K_S",
+    "q5_K_M": "Q5_K_M",
+    "q6_K": "Q6_K"
+}
+
+# Format options
+FORMAT_OPTIONS = {
+    "json": "JSON format",
+    "structured": "Structured output with schema"
+}
