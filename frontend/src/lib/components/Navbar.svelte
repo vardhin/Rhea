@@ -1,73 +1,96 @@
 <script>
     import { sidebarStore } from '$lib/stores/ui.js';
-    
+    import { Menu, X } from 'lucide-svelte';
+    import { writable } from 'svelte/store';
+
+    const menuOpen = writable(false);
+
     function toggleSidebar() {
         sidebarStore.update(state => ({
             ...state,
-            expanded: !state.expanded
+            visible: !state.visible
         }));
+        menuOpen.update(open => !open);
     }
 </script>
 
 <nav class="navbar">
     <div class="nav-left">
-        <button class="sidebar-toggle" on:click={toggleSidebar}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
-            </svg>
+        <button class="sidebar-toggle" on:click={toggleSidebar} aria-label="Toggle sidebar">
+            {#if $menuOpen}
+                <X size={20} class="icon-animated" />
+            {:else}
+                <Menu size={20} class="icon-animated" />
+            {/if}
         </button>
-        
         <div class="brand">
             <span class="brand-name">Rhea</span>
-            <span class="brand-subtitle">Advanced LLM Chat</span>
         </div>
     </div>
-    
     <div class="nav-right">
-        <div class="connection-status">
-            <div class="status-indicator connected"></div>
-            <span>Connected</span>
-        </div>
+        <div class="status-indicator connected"></div>
     </div>
 </nav>
 
 <style>
     .navbar {
         height: 60px;
-        background: var(--bg-secondary);
-        border-bottom: 1px solid var(--border-primary);
+        background: transparent;
         display: flex;
         align-items: center;
         justify-content: space-between;
         padding: 0 20px;
-        position: relative;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        width: 100%;
         z-index: 100;
+        box-sizing: border-box;
     }
 
     .nav-left {
         display: flex;
         align-items: center;
         gap: 16px;
+        flex: 1;
     }
 
     .sidebar-toggle {
-        background: none;
-        border: none;
+        background: var(--bg-primary);
+        border: 1px solid var(--border-primary);
         color: var(--text-secondary);
         cursor: pointer;
         padding: 8px;
-        border-radius: 6px;
-        transition: all 0.2s;
+        border-radius: 12px;
+        transition: all var(--transition-fast);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        flex-shrink: 0;
     }
 
     .sidebar-toggle:hover {
-        color: var(--text-primary);
         background: var(--bg-tertiary);
+        color: var(--text-primary);
+        border-color: var(--border-secondary);
+        transform: translateY(-1px);
+    }
+
+    .icon-animated {
+        transition: transform 0.3s cubic-bezier(.4,2,.3,1), opacity 0.2s;
+    }
+
+    .sidebar-toggle:active .icon-animated {
+        transform: scale(0.95) rotate(-20deg);
     }
 
     .brand {
         display: flex;
-        flex-direction: column;
+        align-items: center;
+        flex: 1;
     }
 
     .brand-name {
@@ -77,30 +100,18 @@
         line-height: 1;
     }
 
-    .brand-subtitle {
-        font-size: 12px;
-        color: var(--text-secondary);
-        line-height: 1;
-    }
-
     .nav-right {
         display: flex;
         align-items: center;
-    }
-
-    .connection-status {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        color: var(--text-secondary);
+        flex-shrink: 0;
     }
 
     .status-indicator {
-        width: 8px;
-        height: 8px;
+        width: 10px;
+        height: 10px;
         border-radius: 50%;
         background: var(--accent-error);
+        transition: all var(--transition-fast);
     }
 
     .status-indicator.connected {

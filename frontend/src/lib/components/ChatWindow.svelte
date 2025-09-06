@@ -1,4 +1,6 @@
 <script>
+    import { MessageCircle, Lightbulb, Shield, RotateCcw, Send, Plus } from 'lucide-svelte';
+    
     let { sidebarExpanded, currentView } = $props();
     
     // Mock messages for demo
@@ -19,6 +21,7 @@
     
     let messageInput = $state('');
     let isGenerating = $state(false);
+    let showToolsMenu = $state(false);
     
     function sendMessage() {
         if (!messageInput.trim() || isGenerating) return;
@@ -53,44 +56,28 @@
             sendMessage();
         }
     }
+    
+    function toggleToolsMenu() {
+        showToolsMenu = !showToolsMenu;
+    }
+    
+    function handleToolAction(action) {
+        console.log('Tool action:', action);
+        showToolsMenu = false;
+        // Handle different tool actions here
+    }
+    
+    // Close menu when clicking outside
+    function handleClickOutside(event) {
+        if (showToolsMenu && !event.target.closest('.tools-menu-container')) {
+            showToolsMenu = false;
+        }
+    }
 </script>
 
+<svelte:window on:click={handleClickOutside} />
+
 <main class="chat-window" class:sidebar-expanded={sidebarExpanded}>
-    <!-- Quick Actions Bar -->
-    <div class="quick-actions">
-        <div class="quick-actions-left">
-            <button class="quick-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
-                </svg>
-                Tools
-            </button>
-            
-            <button class="quick-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-                </svg>
-                Thinking
-            </button>
-            
-            <button class="quick-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                llama3.2:3b
-            </button>
-        </div>
-        
-        <div class="quick-actions-right">
-            <button class="quick-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                </svg>
-                Refresh
-            </button>
-        </div>
-    </div>
-    
     <!-- Messages Container -->
     <div class="messages-container">
         <div class="messages">
@@ -117,11 +104,62 @@
                 </div>
             {/if}
         </div>
+        <!-- Add padding at bottom to prevent overlap with floating input -->
+        <div class="bottom-spacer"></div>
     </div>
     
-    <!-- Input Area -->
-    <div class="input-area">
+    <!-- Floating Input Area -->
+    <div class="input-area floating">
         <div class="input-container">
+            <!-- Tools Menu Button -->
+            <div class="tools-menu-container">
+                <button 
+                    class="input-button tools-button"
+                    on:click={toggleToolsMenu}
+                    disabled={isGenerating}
+                >
+                    <Plus size={20} />
+                </button>
+                
+                {#if showToolsMenu}
+                    <div class="tools-menu">
+                        <button 
+                            class="tool-item"
+                            on:click={() => handleToolAction('tools')}
+                        >
+                            <MessageCircle size={16} />
+                            Tools
+                        </button>
+                        
+                        <button 
+                            class="tool-item"
+                            on:click={() => handleToolAction('thinking')}
+                        >
+                            <Lightbulb size={16} />
+                            Thinking
+                        </button>
+                        
+                        <button 
+                            class="tool-item"
+                            on:click={() => handleToolAction('model')}
+                        >
+                            <Shield size={16} />
+                            llama3.2:3b
+                        </button>
+                        
+                        <div class="menu-divider"></div>
+                        
+                        <button 
+                            class="tool-item"
+                            on:click={() => handleToolAction('refresh')}
+                        >
+                            <RotateCcw size={16} />
+                            Refresh Chat
+                        </button>
+                    </div>
+                {/if}
+            </div>
+            
             <textarea
                 bind:value={messageInput}
                 on:keydown={handleKeydown}
@@ -131,13 +169,11 @@
             ></textarea>
             
             <button 
-                class="send-button"
+                class="input-button send-button"
                 on:click={sendMessage}
                 disabled={!messageInput.trim() || isGenerating}
             >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
-                </svg>
+                <Send size={20} />
             </button>
         </div>
     </div>
@@ -148,51 +184,18 @@
         flex: 1;
         display: flex;
         flex-direction: column;
-        height: 100vh;
+        height: 100%;
         background: var(--bg-primary);
         overflow: hidden;
-    }
-    
-    .quick-actions {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 12px 20px;
-        border-bottom: 1px solid var(--border-primary);
-        background: var(--bg-secondary);
-        gap: 12px;
-    }
-    
-    .quick-actions-left,
-    .quick-actions-right {
-        display: flex;
-        gap: 8px;
-    }
-    
-    .quick-btn {
-        background: var(--bg-tertiary);
-        border: 1px solid var(--border-primary);
-        color: var(--text-secondary);
-        padding: 6px 12px;
-        border-radius: 6px;
-        font-size: 13px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        transition: all var(--transition-fast);
-    }
-    
-    .quick-btn:hover {
-        background: var(--bg-primary);
-        color: var(--text-primary);
-        border-color: var(--border-secondary);
+        position: relative;
     }
     
     .messages-container {
         flex: 1;
         overflow-y: auto;
         padding: 20px;
+        padding-bottom: 140px; /* Space for floating input */
+        min-height: 0; /* Allow flex shrinking */
     }
     
     .messages {
@@ -201,6 +204,10 @@
         display: flex;
         flex-direction: column;
         gap: 20px;
+    }
+    
+    .bottom-spacer {
+        height: 0;
     }
     
     .message {
@@ -217,15 +224,18 @@
     
     .message-content {
         max-width: 70%;
-        background: var(--chat-assistant-bg);
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-primary);
         padding: 16px 20px;
-        border-radius: 18px;
+        border-radius: 12px;
         position: relative;
+        transition: all var(--transition-fast);
     }
     
     .message.user .message-content {
-        background: var(--chat-user-bg);
+        background: var(--accent-primary);
         color: white;
+        border-color: var(--accent-primary);
     }
     
     .message-text {
@@ -233,6 +243,11 @@
         line-height: 1.5;
         white-space: pre-wrap;
         word-wrap: break-word;
+        color: var(--text-primary);
+    }
+    
+    .message.user .message-text {
+        color: white;
     }
     
     .message-timestamp {
@@ -244,6 +259,7 @@
     
     .message.user .message-timestamp {
         text-align: left;
+        color: rgba(255, 255, 255, 0.8);
     }
     
     .typing-indicator {
@@ -278,8 +294,20 @@
     
     .input-area {
         padding: 20px;
-        border-top: 1px solid var(--border-primary);
         background: var(--bg-secondary);
+        border-top: 1px solid var(--border-primary);
+    }
+    
+    .input-area.floating {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 100;
+        backdrop-filter: blur(10px);
+        background: rgba(var(--bg-secondary-rgb), 0.95);
+        box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.1);
+        flex-shrink: 0;
     }
     
     .input-container {
@@ -287,38 +315,24 @@
         margin: 0 auto;
         position: relative;
         display: flex;
-        align-items: flex-end;
+        align-items: center;
         gap: 12px;
+        height: 44px;
     }
     
-    .input-container textarea {
-        flex: 1;
+    .tools-menu-container {
+        position: relative;
+        flex-shrink: 0;
+        height: 44px;
+        display: flex;
+        align-items: center;
+    }
+    
+    /* Base input button styles - shared by tools and send buttons */
+    .input-button {
         background: var(--bg-primary);
         border: 1px solid var(--border-primary);
-        border-radius: 12px;
-        padding: 12px 16px;
-        font-size: 15px;
-        line-height: 1.5;
-        resize: none;
-        min-height: 44px;
-        max-height: 150px;
-        transition: border-color var(--transition-fast);
-    }
-    
-    .input-container textarea:focus {
-        border-color: var(--accent-primary);
-        outline: none;
-    }
-    
-    .input-container textarea:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-    
-    .send-button {
-        background: var(--accent-primary);
-        border: none;
-        color: white;
+        color: var(--text-secondary);
         width: 44px;
         height: 44px;
         border-radius: 12px;
@@ -330,15 +344,122 @@
         flex-shrink: 0;
     }
     
-    .send-button:hover:not(:disabled) {
-        background: var(--accent-secondary);
+    .input-button:hover:not(:disabled) {
+        background: var(--bg-tertiary);
+        color: var(--text-primary);
+        border-color: var(--border-secondary);
         transform: translateY(-1px);
     }
     
-    .send-button:disabled {
+    .input-button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
         transform: none;
+    }
+    
+    /* Send button specific overrides */
+    .send-button {
+        background: var(--accent-primary);
+        border-color: var(--accent-primary);
+        color: white;
+    }
+    
+    .send-button:hover:not(:disabled) {
+        background: var(--accent-secondary);
+        border-color: var(--accent-secondary);
+        color: white;
+        box-shadow: 0 4px 12px rgba(var(--accent-primary-rgb, 59, 130, 246), 0.3);
+    }
+    
+    .send-button:disabled {
+        background: var(--bg-tertiary);
+        border-color: var(--border-primary);
+        color: var(--text-tertiary);
+        box-shadow: none;
+    }
+    
+    /* Tools button uses base styles only */
+    .tools-button {
+        
+        /* Inherits all styles from .input-button */
+    }
+    
+    .tools-menu {
+        position: absolute;
+        bottom: 100%;
+        left: 0;
+        margin-bottom: 8px;
+        background: var(--bg-primary);
+        border: 1px solid var(--border-primary);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+        padding: 8px;
+        min-width: 200px;
+        z-index: 1000;
+        backdrop-filter: blur(10px);
+    }
+    
+    .tool-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        padding: 10px 12px;
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        color: var(--text-primary);
+        font-size: 14px;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+        text-align: left;
+    }
+    
+    .tool-item:hover {
+        background: var(--bg-tertiary);
+        transform: translateY(-1px);
+    }
+    
+    .menu-divider {
+        height: 1px;
+        background: var(--border-primary);
+        margin: 8px 0;
+    }
+    
+    .input-container textarea {
+        flex: 1;
+        background: var(--bg-primary);
+        border: 1px solid var(--border-primary);
+        border-radius: 12px;
+        padding: 0 16px;
+        font-size: 15px;
+        line-height: 42px;
+        resize: none;
+        height: 44px;
+        min-height: 44px;
+        max-height: 150px;
+        transition: all var(--transition-fast);
+        color: var(--text-primary);
+        font-family: inherit;
+        overflow-y: auto;
+        box-sizing: border-box;
+    }
+    
+    .input-container textarea:focus {
+        border-color: var(--accent-primary);
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb, 59, 130, 246), 0.1);
+    }
+    
+    .input-container textarea:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    
+    .input-container textarea::placeholder {
+        color: var(--text-tertiary);
+        opacity: 1;
+        line-height: 42px;
     }
     
     /* Responsive adjustments */
@@ -349,19 +470,40 @@
         
         .messages-container {
             padding: 16px;
+            padding-bottom: 120px;
         }
         
         .input-area {
             padding: 16px;
         }
         
-        .quick-actions {
-            padding: 8px 16px;
+        .input-container {
+            gap: 8px;
+            height: 40px;
         }
         
-        .quick-btn {
-            padding: 4px 8px;
-            font-size: 12px;
+        .tools-menu {
+            min-width: 180px;
+        }
+        
+        .tools-menu-container {
+            height: 40px;
+        }
+        
+        .input-button {
+            width: 40px;
+            height: 40px;
+        }
+        
+        .input-container textarea {
+            height: 40px;
+            min-height: 40px;
+            line-height: 38px;
+            font-size: 14px;
+        }
+        
+        .input-container textarea::placeholder {
+            line-height: 38px;
         }
     }
 </style>

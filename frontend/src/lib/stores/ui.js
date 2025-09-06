@@ -1,9 +1,8 @@
 import { writable } from 'svelte/store';
 
 export const sidebarStore = writable({
-    expanded: false,
-    currentView: 'chat', // chat, settings, models, functions
-    width: 320
+    visible: true,    // Controls fade in/out (hamburger menu)
+    expanded: false   // Controls expand/contract (sidebar toggle button)
 });
 
 export const chatStore = writable({
