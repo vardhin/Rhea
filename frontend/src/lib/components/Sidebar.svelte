@@ -19,12 +19,26 @@
         { id: '3', title: 'Creative Writing Ideas', timestamp: '3 hours ago' }
     ]);
     
+
+
     function selectView(viewId) {
-        currentView = viewId;
-        expanded = true; // Always expand when selecting any view
-        sidebarStore.update(store => ({ ...store, expanded: true }));
+        if (!expanded) {
+            // If collapsed, expand and show selected tab
+            expanded = true;
+            currentView = viewId;
+            sidebarStore.update(store => ({ ...store, expanded: true, currentView: viewId }));
+        } else if (currentView === viewId) {
+            // If expanded and same tab, collapse
+            expanded = false;
+            sidebarStore.update(store => ({ ...store, expanded: false }));
+        } else {
+            // If expanded and different tab, switch tab and stay expanded
+            currentView = viewId;
+            sidebarStore.update(store => ({ ...store, currentView: viewId }));
+        }
     }
     
+
     function newChat() {
         const newId = Date.now().toString();
         conversations.unshift({
@@ -33,8 +47,8 @@
             timestamp: 'Just now'
         });
         currentView = 'chat';
-        expanded = true;
-        sidebarStore.update(store => ({ ...store, expanded: true }));
+        // Do not force expand here
+        sidebarStore.update(store => ({ ...store, currentView: 'chat' }));
     }
     
     function toggleExpanded() {
@@ -173,8 +187,7 @@
                     on:click={() => selectView(item.id)}
                     title={item.label}
                 >
-                    <svelte:component this={item.icon} size={16} />
-                    <span class="pill-text">{item.label}</span>
+                    
                 </button>
             {/each}
         </div>
@@ -189,31 +202,19 @@
             </button>
         {/if}
         
-        <!-- Navigation Items (only show when contracted) -->
-        {#if !expanded}
-            {#each navigationItems as item}
-                <button 
-                    class="nav-button" 
-                    class:active={currentView === item.id}
-                    on:click={() => selectView(item.id)}
-                    title={item.label}
-                >
-                    <svelte:component this={item.icon} size={18} />
-                </button>
-            {/each}
-        {/if}
+        <!-- Navigation Items (always show, now act as toggle/selectors) -->
+        {#each navigationItems as item}
+            <button 
+                class="nav-button" 
+                class:active={currentView === item.id}
+                on:click={() => selectView(item.id)}
+                title={item.label}
+            >
+                <svelte:component this={item.icon} size={18} />
+            </button>
+        {/each}
         
-        <!-- Toggle Button -->
-        <button class="nav-button toggle" on:click={toggleExpanded} title={expanded ? "Collapse" : "Expand"}>
-            {#if expanded}
-                <ChevronLeft size={18} />
-            {:else}
-                <ChevronRight size={18} />
-            {/if}
-            <span class="nav-text">
-                {expanded ? 'Collapse' : 'Expand'}
-            </span>
-        </button>
+    <!-- Remove toggle button, navigation buttons now handle expand/collapse -->
     </div>
 </aside>
 {/if}
@@ -354,7 +355,7 @@
     .sidebar-content {
         flex: 1;
         overflow-y: auto;
-        padding: 16px;
+        padding: 13px;
         min-height: 0;
     }
     
@@ -470,50 +471,6 @@
         background: var(--bg-secondary, #ffffff);
     }
 
-    .pill-button {
-        border: none;
-        background: var(--bg-tertiary, #f8f9fa);
-        color: var(--text-secondary, #6b7280);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        padding: 8px 12px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 500;
-        transition: all 0.2s ease;
-        min-width: 60px;
-        flex: 1;
-    }
-
-    .pill-button:hover {
-        background: var(--accent-primary, #007bff);
-        color: white;
-        transform: translateY(-1px);
-        box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3);
-    }
-
-    .pill-button.active {
-        background: var(--accent-primary, #007bff);
-        color: white;
-        box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3);
-    }
-
-    .pill-text {
-        opacity: 1;
-        transform: translateX(0);
-        transition: all 0.2s ease;
-    }
-    
-    /* Navigation Pills (contracted mode) */
-    .sidebar-navigation {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        flex-shrink: 0;
-    }
     
     .nav-button {
         border: none;
