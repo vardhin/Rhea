@@ -211,6 +211,8 @@ export const createStreamingChat = async (messages, options = {}) => {
                                 if (jsonData === '') continue;
                                 
                                 const data = JSON.parse(jsonData);
+                                
+                                // Handle content chunks
                                 if (data.chunk) {
                                     yield { 
                                         message: { 
@@ -219,6 +221,26 @@ export const createStreamingChat = async (messages, options = {}) => {
                                         } 
                                     };
                                 }
+                                
+                                // Handle tool calls
+                                if (data.tool_call) {
+                                    yield { 
+                                        tool_call: data.tool_call
+                                    };
+                                }
+                                
+                                // Handle debug info
+                                if (data.debug) {
+                                    yield {
+                                        debug: data.debug
+                                    };
+                                }
+                                
+                                // Handle errors
+                                if (data.error) {
+                                    throw new Error(data.error);
+                                }
+                                
                             } catch (e) {
                                 console.warn('Failed to parse streaming data:', line, e);
                             }

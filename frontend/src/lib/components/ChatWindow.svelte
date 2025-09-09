@@ -219,6 +219,7 @@
                 id: Date.now().toString() + '_assistant',
                 role: 'assistant',
                 content: '',
+                toolCalls: [], // Add tool calls tracking
                 timestamp: new Date().toISOString()
             };
             
@@ -235,10 +236,23 @@
             
             // Process streaming response
             let fullContent = '';
+            let toolCalls = [];
             for await (const chunk of currentStream.getIterator()) {
                 if (chunk.message?.content) {
                     fullContent += chunk.message.content;
                     conversationActions.updateLastMessage(conversationId, fullContent);
+                }
+                
+                // Handle tool calls
+                if (chunk.tool_call) {
+                    toolCalls.push(chunk.tool_call);
+                    // Update the message to show tool calls
+                    conversationActions.updateLastMessageWithToolCalls(conversationId, fullContent, toolCalls);
+                }
+                
+                // Handle debug info (optional - for development)
+                if (chunk.debug) {
+                    console.log('Tool call debug:', chunk.debug);
                 }
             }
             
@@ -271,8 +285,21 @@
                 typeof tool === 'string' ? tool : tool.function?.name || 'unknown'
             );
             
-            systemMessage += `You are a helpful assistant with access to tools. Use them when appropriate.`;
-  
+            // Create detailed tool descriptions
+            const toolDescriptions = [];
+            const availableTools = $ollamaStore.tools.available;
+            
+            for (const toolName of toolNames) {
+                const toolDef = availableTools[toolName];
+                if (toolDef && toolDef.function) {
+                    const description = toolDef.function.description || 'No description available';
+                    toolDescriptions.push(`- ${toolName}: ${description}`);
+                }
+            }
+            
+            if (toolDescriptions.length > 0) {
+                systemMessage += `\n\nYou have access to the following tools. Use them when appropriate:\n${toolDescriptions.join('\n')}\n\nTo use a tool, you must call it using the exact tool name provided. Do not make up or hallucinate tool names or capabilities.`;
+            }
         }
         
         return systemMessage;
@@ -373,6 +400,24 @@
                     <div class="message {message.role}">
                         <div class="message-content">
                             <div class="message-text">{message.content}</div>
+                            
+                            <!-- Display tool calls if present -->
+                            {#if message.toolCalls && message.toolCalls.length > 0}
+                                <div class="tool-calls">
+                                    <div class="tool-calls-header">🔧 Tool Calls:</div>
+                                    {#each message.toolCalls as toolCall}
+                                        <div class="tool-call">
+                                            <div class="tool-call-name">📞 {toolCall.function?.name || 'Unknown'}</div>
+                                            {#if toolCall.function?.arguments}
+                                                <div class="tool-call-args">
+                                                    <code>{toolCall.function.arguments}</code>
+                                                </div>
+                                            {/if}
+                                        </div>
+                                    {/each}
+                                </div>
+                            {/if}
+                            
                             <div class="message-timestamp">
                                 {formatTimestamp(message.timestamp)}
                             </div>
@@ -483,3 +528,43 @@
         </div>
     </div>
 </main>
+
+<style>
+    /* Add to your chatwindow.css */
+.tool-calls {
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(0, 123, 255, 0.1);
+    border-radius: 6px;
+    border-left: 3px solid var(--accent-primary);
+}
+
+.tool-calls-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-primary);
+    margin-bottom: 6px;
+}
+
+.tool-call {
+    margin-bottom: 4px;
+}
+
+.tool-call-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.tool-call-args {
+    margin-top: 2px;
+    font-size: 11px;
+}
+
+.tool-call-args code {
+    background: rgba(0, 0, 0, 0.1);
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: monospace;
+}
+</style>

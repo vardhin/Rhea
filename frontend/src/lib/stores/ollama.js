@@ -153,6 +153,25 @@ export const conversationActions = {
         }));
     },
     
+    async updateLastMessageWithToolCalls(conversationId, content, toolCalls = []) {
+        conversationStore.update(state => ({
+            ...state,
+            conversations: state.conversations.map(conv => 
+                conv.id === conversationId 
+                    ? { 
+                        ...conv, 
+                        messages: conv.messages.map((msg, index) => 
+                            index === conv.messages.length - 1 
+                                ? { ...msg, content, toolCalls }
+                                : msg
+                        ),
+                        lastModified: new Date().toISOString()
+                    }
+                    : conv
+            )
+        }));
+    },
+    
     async updateModel(conversationId, model) {
         conversationStore.update(state => ({
             ...state,
