@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { MessageCircle, Lightbulb, Shield, RotateCcw, Send, Plus } from 'lucide-svelte';
+    import { MessageCircle, Lightbulb, Shield, RotateCcw, Send, Plus, Square } from 'lucide-svelte';
     import { ollamaStore, conversationStore, ollamaActions, conversationActions } from '$lib/stores/ollama.js';
     import { chat, createStreamingChat } from '$lib/api.js';
     import './chatwindow.css';
@@ -277,9 +277,12 @@
     
     // Enhanced system message with stronger tool instructions
     function getSystemMessageWithToolInstructions() {
-        let systemMessage = currentConversation?.systemMessage || $ollamaStore.systemMessage || 'You are a helpful AI assistant.';
-        
-        // Add tool instructions if tools are enabled
+        let systemMessage = currentConversation?.systemMessage || $ollamaStore.systemMessage || 'You are a helpful AI assistant. NEVER HALLUCINATE OR MAKE UP INFORMATION.';
+        systemMessage += '\n if the user response starts in this format: //RESPONSE://  then you have to think wether to still use tool or to respond without tool, because RESPOND is the response of a previous tool call you made';
+        systemMessage += '\n YOU MUST USE TOOLS, and ESPECIALLY DONT THINK YOU DO NOT HAVE A CAPABILITY, YOU WILL USE THESE TOOLS TO FULFILL THE GAPS OF YOUR CAPABILITY'
+        systemMessage += '\n\nYou can use the following tools, you must provide a toolcall for any prompt the user gives just in case:\n';
+        systemMessage += '\n do not provide a tool call only when you think you can do it on your own';
+        systemMessage += '\n even if you dont have the capability to use the tools, assume you can, and give me a tool call, like how you will call the function';        // Add tool instructions if tools are enabled
         if ($ollamaStore.tools.enabled && $ollamaStore.tools.selected.length > 0) {
             const toolNames = $ollamaStore.tools.selected.map(tool => 
                 typeof tool === 'string' ? tool : tool.function?.name || 'unknown'
@@ -298,7 +301,7 @@
             }
             
             if (toolDescriptions.length > 0) {
-                systemMessage += `\n\nYou have access to the following tools. Use them when appropriate:\n${toolDescriptions.join('\n')}\n\nTo use a tool, you must call it using the exact tool name provided. Do not make up or hallucinate tool names or capabilities.`;
+                systemMessage += `\n\nYou have access to the following tools:\n${toolDescriptions.join('\n')}\n\nTo use a tool, you must call it using the exact tool name provided. Do not make up or hallucinate tool names or capabilities.`;
             }
         }
         
@@ -364,6 +367,27 @@
         if (!timestamp) return '';
         const date = new Date(timestamp);
         return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
+    
+    async function stopGeneration() {
+        if (currentStream) {
+            try {
+                await currentStream.close();
+                currentStream = null;
+            } catch (error) {
+                console.error('Error stopping stream:', error);
+            }
+        }
+        
+        isGenerating = false;
+        conversationActions.setLoading(false);
+        
+        // Add a message indicating the generation was stopped
+        if ($conversationStore.currentId) {
+            const currentContent = messages[messages.length - 1]?.content || '';
+            const stoppedMessage = currentContent + '\n\n[Generation stopped by user]';
+            conversationActions.updateLastMessage($conversationStore.currentId, stoppedMessage);
+        }
     }
 </script>
 
@@ -517,14 +541,25 @@
                 disabled={isGenerating || !$ollamaStore.isConnected || currentModelName === 'No model selected'}
             ></textarea>
             
-            <button 
-                class="input-button send-button"
-                on:click={sendMessageStreaming}
-                disabled={!messageInput.trim() || isGenerating || !$ollamaStore.isConnected || currentModelName === 'No model selected'}
-                title="Send Message"
-            >
-                <Send size={20} />
-            </button>
+            <!-- Conditional rendering: Show stop button when generating, send button otherwise -->
+            {#if isGenerating}
+                <button 
+                    class="input-button stop-button"
+                    on:click={stopGeneration}
+                    title="Stop Generation"
+                >
+                    <Square size={20} />
+                </button>
+            {:else}
+                <button 
+                    class="input-button send-button"
+                    on:click={sendMessageStreaming}
+                    disabled={!messageInput.trim() || isGenerating || !$ollamaStore.isConnected || currentModelName === 'No model selected'}
+                    title="Send Message"
+                >
+                    <Send size={20} />
+                </button>
+            {/if}
         </div>
     </div>
 </main>
@@ -566,5 +601,25 @@
     padding: 2px 4px;
     border-radius: 3px;
     font-family: monospace;
+}
+
+.stop-button {
+    background-color: #dc3545;
+    color: white;
+    transition: all 0.2s ease;
+}
+
+.stop-button:hover:not(:disabled) {
+    background-color: #c82333;
+    transform: scale(1.05);
+}
+
+.stop-button:active {
+    transform: scale(0.98);
+}
+
+/* Add animation for button transition */
+.input-button {
+    transition: all 0.2s ease;
 }
 </style>

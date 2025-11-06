@@ -212,139 +212,6 @@ def get_ollama_server_info(base_url="http://localhost:11434"):
             "status": "error"
         }
 
-def get_tool_function(tool_name):
-    """
-    Get the actual function implementation for a tool.
-    
-    Args:
-        tool_name (str): Name of the tool to get function for.
-        
-    Returns:
-        callable: The function implementation.
-    """
-    def web_search(query):
-        """Search the web for information."""
-        # Placeholder implementation
-        return f"Web search results for: {query} (This is a mock result)"
-    
-    def file_operations(operation, filename, content=None):
-        """Perform file operations."""
-        # Placeholder implementation
-        if operation == "read":
-            return f"Content of {filename} (mock result)"
-        elif operation == "write":
-            return f"Written to {filename}: {content}"
-        else:
-            return f"File operation {operation} on {filename}"
-    
-    def code_execution(language, code):
-        """Execute code in various languages."""
-        # Placeholder implementation
-        return f"Executed {language} code: {code[:50]}... (mock result)"
-    
-    def calculator(expression):
-        """Perform mathematical calculations."""
-        try:
-            # Simple eval for basic math (be careful with this in production!)
-            result = eval(expression.replace("^", "**"))  # Handle exponents
-            return f"Result: {result}"
-        except Exception as e:
-            return f"Error calculating {expression}: {str(e)}"
-    
-    # Map tool names to functions
-    tool_functions = {
-        "web_search": web_search,
-        "file_operations": file_operations,
-        "code_execution": code_execution,
-        "calculator": calculator
-    }
-    
-    return tool_functions.get(tool_name)
-
-def get_available_tools():
-    """
-    Get list of available tools with proper parameter schemas.
-    
-    Returns:
-        dict: Dictionary of available tools with their descriptions and parameters.
-    """
-    return {
-        "web_search": {
-            "name": "Web Search",
-            "description": "Search the web for current information",
-            "category": "information",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    }
-                },
-                "required": ["query"]
-            }
-        },
-        "file_operations": {
-            "name": "File Operations",
-            "description": "Read, write, and manipulate files",
-            "category": "system",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "operation": {
-                        "type": "string",
-                        "enum": ["read", "write", "delete"],
-                        "description": "The file operation to perform"
-                    },
-                    "filename": {
-                        "type": "string",
-                        "description": "The name of the file"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to write (for write operations)"
-                    }
-                },
-                "required": ["operation", "filename"]
-            }
-        },
-        "code_execution": {
-            "name": "Code Execution",
-            "description": "Execute code in various programming languages",
-            "category": "development",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "language": {
-                        "type": "string",
-                        "enum": ["python", "javascript", "bash"],
-                        "description": "Programming language"
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": "Code to execute"
-                    }
-                },
-                "required": ["language", "code"]
-            }
-        },
-        "calculator": {
-            "name": "Calculator",
-            "description": "Perform mathematical calculations",
-            "category": "utility",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "Mathematical expression to evaluate"
-                    }
-                },
-                "required": ["expression"]
-            }
-        }
-    }
-
 # Global state for current configuration
 _current_config = {
     "selected_model": None,
@@ -418,36 +285,6 @@ def set_parameters(parameters, model_name=None):
     
     return _current_config["parameters"].copy()
 
-def get_selected_tools():
-    """
-    Get currently selected tools.
-    
-    Returns:
-        list: List of selected tool names.
-    """
-    return _current_config["selected_tools"].copy()
-
-def select_tools(tool_names):
-    """
-    Select/toggle tools for use with models.
-    
-    Args:
-        tool_names (list): List of tool names to select.
-        
-    Returns:
-        dict: Updated tools configuration.
-    """
-    global _current_config
-    available_tools = get_available_tools()
-    
-    # Validate tool names
-    valid_tools = [name for name in tool_names if name in available_tools]
-    _current_config["selected_tools"] = valid_tools
-    
-    return {
-        "selected": valid_tools,
-        "available": available_tools
-    }
 
 def get_thinking_mode():
     """
@@ -536,14 +373,6 @@ def send_message_to_ollama_model(model, message, stream=False, base_url=None, us
             
         print("🚫 Thinking mode disabled - direct response mode")
     
-    # Add tools if enabled and available (check model capabilities first)
-    if use_tools and _current_config["selected_tools"]:
-        capabilities = get_model_capabilities(model, base_url)
-        if capabilities.get("function_calling", False):
-            # Add tools to payload (implementation depends on Ollama's tool format)
-            payload["tools"] = _current_config["selected_tools"]
-            print(f"🛠️ Tools enabled: {_current_config['selected_tools']}")
-    
     try:
         response = requests.post(url, json=payload, stream=stream)
         response.raise_for_status()
@@ -604,15 +433,13 @@ def get_full_config():
     
     try:
         server_info = get_ollama_server_info(_current_config["base_url"])
-        available_tools = get_available_tools()
+
         
         return {
             "server": server_info,
             "parameters": _current_config["parameters"],
             "thinking_mode": _current_config["thinking_mode"],
-            "selected_tools": _current_config["selected_tools"],
             "selected_model": _current_config["selected_model"],
-            "available_tools": available_tools,
             "base_url": _current_config["base_url"]
         }
     except Exception as e:
@@ -644,15 +471,6 @@ if __name__ == "__main__":
         # Test default parameters
         params = get_default_parameters_for_model(first_model)
         print(f"Default parameters: {params}")
-    
-    # Test tools
-    tools = get_available_tools()
-    print(f"Available tools: {list(tools.keys())}")
-    
-    # Test tool selection
-    select_tools(["web_search", "calculator"])
-    selected = get_selected_tools()
-    print(f"Selected tools: {selected}")
     
     # Test thinking mode
     set_thinking_mode(True, 2)
