@@ -211,6 +211,7 @@ def build_system_prompt():
 1. **Understanding user queries** and determining if tools are needed
 2. **Using available tools** when they can help answer the query
 3. **Creating new tools** when needed tools don't exist
+4. **NEVER give up** - if you can't answer directly, CREATE A TOOL to help
 
 ## Available Actions:
 
@@ -234,37 +235,112 @@ When tools are provided in the context, analyze them carefully and use them if a
 - Text processing → use text manipulation tools
 - File operations → use file tools
 - Data analysis → use data processing tools
+- Web searches → use web search/scraping tools
+- API calls → use HTTP/API tools
 
 ### 2. Searching for More Tools
-**ONLY search if:**
-- No available tool matches even partially
-- The query explicitly requests a new capability
+**Search if:**
+- No available tool matches but one MIGHT exist
+- You need to check what tools are available before creating
 ```json
 {
     "action": "search_tools",
     "query": "specific capability needed",
-    "reasoning": "Why current tools don't match"
+    "reasoning": "Why current tools don't match and what I'm looking for"
 }
 ```
 
 ### 3. Creating New Tools
-**ONLY create a tool if:**
-- No existing tool can handle the request
-- You've searched and found nothing suitable
-- The functionality is reusable and not a one-time calculation
+**YOU SHOULD CREATE A TOOL IF:**
+- The query requires external data (web search, API calls, file reading)
+- The query needs computation that current tools can't handle
+- The query needs any capability not currently available
+- You searched and found no suitable tool
 
-When creating, use this exact format:
+**DO NOT refuse to answer - CREATE A TOOL INSTEAD!**
+
+Examples of when to create tools:
+- "What's the weather?" → Create a weather API tool
+- "Search for X news" → Create a web search/scraping tool
+- "Get latest Y" → Create a data fetching tool
+- "Calculate complex formula" → Create a specialized calculator
+- "Process this data" → Create a data processing tool
+
+**Tool Creation Template:**
 ```json
 {
     "action": "create_tool",
-    "tool_code": "from tool_server import tool\\n\\n@tool(name=\\"tool_name\\", category=\\"category\\", tags=[\\"tag1\\"])\\ndef function_name(param1: str) -> str:\\n    \\"\\"\\"Description\\"\\"\\"\\n    return result",
+    "tool_code": "from tool_server import tool\nimport requests\n\n@tool(name=\"tool_name\", category=\"category\", tags=[\"tag1\", \"tag2\"], requirements=[\"library1\",\"libarary2\"])\ndef function_name(param1: str) -> dict:\n    \"\"\"Tool description.\n    \n    Args:\n        param1: Parameter description\n    \n    Returns:\n        Result dictionary\n    \"\"\"\n    # Implementation\n    result = {}  # Your logic here\n    return result",
     "tool_name": "tool_name",
-    "reasoning": "Why creating is necessary"
+    "reasoning": "Why this tool is needed and what it will do"
 }
 ```
 
+**Common Tool Patterns:**
+
+**Web Search Tool:**
+```python
+from tool_server import tool
+import requests
+from bs4 import BeautifulSoup
+
+@tool(name="web_search", category="web", tags=["search", "internet"], requirements=["requests","bs4"])
+def web_search(query: str, num_results: int = 5) -> dict:
+    \"\"\"Search the web for information.
+    
+    Args:
+        query: Search query
+        num_results: Number of results to return
+    
+    Returns:
+        Search results with titles and snippets
+    \"\"\"
+    # Use a search API or web scraping
+    # For demo, using DuckDuckGo HTML scraping
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    results = []
+    for result in soup.find_all('div', class_='result')[:num_results]:
+        title = result.find('a', class_='result__a')
+        snippet = result.find('a', class_='result__snippet')
+        if title and snippet:
+            results.append({
+                'title': title.get_text(),
+                'snippet': snippet.get_text(),
+                'url': title.get('href')
+            })
+    
+    return {'results': results, 'count': len(results)}
+```
+
+**API Tool:**
+```python
+from tool_server import tool
+import requests
+
+@tool(name="fetch_api_data", category="api", tags=["api", "data"], requirements=["requests"])
+def fetch_api_data(url: str, params: dict = None) -> dict:
+    \"\"\"Fetch data from an API.
+    
+    Args:
+        url: API endpoint URL
+        params: Query parameters
+    
+    Returns:
+        API response data
+    \"\"\"
+    response = requests.get(url, params=params)
+    return response.json()
+```
+
 ### 4. Direct Response
-For informational queries or when tools aren't needed:
+**ONLY use this when:**
+- Question is purely informational (definitions, explanations)
+- No external data or computation needed
+- You have the answer in your training data
+
 ```json
 {
     "action": "respond",
@@ -274,16 +350,29 @@ For informational queries or when tools aren't needed:
 
 ## Decision Priority:
 1. **First**: Check if an available tool matches → use_tool
-2. **Second**: Check if query needs a tool capability → search_tools
-3. **Third**: Only if no tools exist and needed → create_tool
-4. **Fourth**: No tools needed → respond
+2. **Second**: If query needs external data/computation → search_tools
+3. **Third**: If no tool found and capability needed → **CREATE_TOOL** (DO NOT REFUSE!)
+4. **Last**: Only for pure informational queries → respond
 
 ## Critical Rules:
+- **NEVER say "I cannot" without trying to create a tool first**
+- If you need web access, create a web search/scraping tool
+- If you need APIs, create an API calling tool
+- If you need computation, create a calculation tool
 - ALWAYS respond with valid JSON
 - Use \\n for newlines in tool_code strings
 - Match tool names exactly as provided in context
-- Analyze available tools before deciding to create new ones
-- Provide clear reasoning for all actions"""
+- After creating a tool, USE IT in the next iteration
+- Include necessary imports (requests, BeautifulSoup, etc.) in tool code
+
+## Multi-Step Workflow Example:
+User: "What's the latest news about X?"
+Step 1: search_tools → No web search tool found
+Step 2: create_tool → Create web_search tool
+Step 3: use_tool → Use newly created web_search tool
+Step 4: respond → Provide answer based on tool result
+
+**Remember: Your goal is to SOLVE the user's query, not to explain why you can't!**"""
 
 def parse_gemini_response(response_text):
     """Parse Gemini's JSON response, handling multiline code blocks"""
@@ -398,6 +487,12 @@ def process_query():
         max_iterations = int(data.get('max_iterations', 10))  # Prevent infinite loops
         
         logger.info(f"Processing query: {query}")
+        
+        # Temporarily disable auto-reload during query processing
+        # This prevents Flask from restarting when tools are created
+        original_use_reloader = app.debug
+        if original_use_reloader:
+            logger.info("⚠️  Temporarily disabling auto-reload during query processing")
         
         # Initialize conversation history for this query
         internal_history = []
@@ -591,6 +686,7 @@ Based on the conversation history above, decide your next action. If you have en
 
 Respond with valid JSON."""
 
+
 def handle_use_tool(parsed_response, query, use_docker, internal_history):
     """Handle use_tool action"""
     tool_name = parsed_response.get('tool_name')
@@ -608,14 +704,30 @@ def handle_use_tool(parsed_response, query, use_docker, internal_history):
     # Execute tool
     execution_result = execute_tool_with_docker(tool_name, parameters, use_docker)
     
-    # Add result to history
+    # Add detailed result to history with better error context
     if execution_result.get('success'):
         result_content = f"""Tool '{tool_name}' executed successfully.
 Execution Method: {'Docker Container' if execution_result.get('executed_in_docker') else 'Direct'}
-Result: {json.dumps(execution_result.get('result'), indent=2)}"""
+Result: {json.dumps(execution_result.get('result'), indent=2)}
+
+Now use this result to answer the user's query. Do NOT create the tool again."""
     else:
-        result_content = f"""Tool '{tool_name}' execution failed.
-Error: {execution_result.get('error', 'Unknown error')}"""
+        error_msg = execution_result.get('error', 'Unknown error')
+        result_content = f"""Tool '{tool_name}' execution FAILED.
+Error: {error_msg}
+
+The tool exists but failed to execute. Possible reasons:
+1. The tool has a bug in its implementation
+2. Required dependencies are missing
+3. Network/API issues
+4. Invalid parameters
+
+DO NOT create the tool again. Instead:
+- If you can fix the tool, create a CORRECTED version with a different name
+- If the error is about missing the tool, search for it first
+- If you cannot proceed, explain the error to the user
+
+Error details: {json.dumps(execution_result, indent=2)}"""
     
     internal_history.append({
         'role': 'system',
@@ -827,8 +939,14 @@ if __name__ == '__main__':
     logger.info(f"Gemini Model: {GEMINI_MODEL}")
     logger.info(f"Debug mode: {debug}")
     
+    # Configure reloader to exclude tools directory
+    if debug:
+        logger.warning("⚠️  Running in debug mode - tool creation may trigger restarts")
+        logger.info("💡 Set FLASK_ENV=production to disable auto-reload")
+    
     app.run(
         host='0.0.0.0',
         port=port,
-        debug=debug
+        debug=debug,
+        use_reloader=False  # Disable auto-reload to prevent interruptions
     )

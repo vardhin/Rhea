@@ -221,8 +221,8 @@ registry = ToolRegistry()
 search_engine = ToolSearchEngine(registry)
 docker_executor = DockerToolExecutor()
 
-# Pull base image on startup
-if docker_executor.is_available():
+# Pull base image on startup - only in main process, not reloader
+if docker_executor.is_available() and os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
     logger.info("Pulling Docker base image...")
     docker_executor.pull_base_image()
 
@@ -592,9 +592,12 @@ if __name__ == '__main__':
     
     if registry.unavailable_tools:
         logger.warning(f"Failed to load {len(registry.unavailable_tools)} tools")
-    
+
+    # Run the app - reloader will monitor only the main app files, not tools directory
     app.run(
         host='0.0.0.0',
         port=port,
-        debug=debug
+        debug=debug,
+        use_reloader=debug,  # Only use reloader in debug mode
+        extra_files=[] if debug else None  # Don't watch extra files
     )
