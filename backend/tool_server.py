@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 import json
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import timedelta
+from tool_search import ToolSearchEngine
+from docker_executor import DockerToolExecutor
 
 # Load environment variables
 load_dotenv()
@@ -191,8 +193,18 @@ class ToolRegistry:
 
 # Tool decorator
 def tool(name: str = None, category: str = "general", auth_required: bool = False, 
-         rate_limit: int = None, tags: list = None):
-    """Decorator to mark a function as a tool"""
+         rate_limit: int = None, tags: list = None, requirements: list = None):
+    """
+    Decorator to mark a function as a tool
+    
+    Args:
+        name: Tool name
+        category: Tool category
+        auth_required: Whether authentication is required
+        rate_limit: Rate limit for this tool
+        tags: List of tags for search/categorization
+        requirements: List of pip packages required for Docker execution
+    """
     def decorator(func):
         func._is_tool = True
         func._tool_name = name or func.__name__
@@ -200,11 +212,19 @@ def tool(name: str = None, category: str = "general", auth_required: bool = Fals
         func._auth_required = auth_required
         func._rate_limit = rate_limit
         func._tags = tags or []
+        func._requirements = requirements or []
         return func
     return decorator
 
-# Initialize tool registry
+# Initialize tool registry and Docker executor
 registry = ToolRegistry()
+search_engine = ToolSearchEngine(registry)
+docker_executor = DockerToolExecutor()
+
+# Pull base image on startup
+if docker_executor.is_available():
+    logger.info("Pulling Docker base image...")
+    docker_executor.pull_base_image()
 
 # Authentication decorator
 def require_auth(f):
@@ -383,16 +403,45 @@ def execute_tool(tool_name: str):
     
     # Get parameters from request
     params = request.get_json() or {}
+    use_docker = request.args.get('use_docker', 'true').lower() == 'true'
     
     # Execute tool
     try:
-        result = registry.execute_tool(tool_name, params)
-        return jsonify({
-            'success': True,
-            'tool': tool_name,
-            'result': result,
-            'timestamp': datetime.utcnow().isoformat()
-        })
+        if use_docker and docker_executor.is_available():
+            # Get tool source code
+            import inspect
+            tool_source = inspect.getsource(tool['function'])
+            
+            # Extract requirements if specified
+            requirements = getattr(tool['function'], '_requirements', None)
+            
+            # Execute in Docker
+            result = docker_executor.execute_tool(
+                tool_code=tool_source,
+                tool_name=tool['name'],
+                params=params,
+                timeout=int(request.args.get('timeout', 30)),
+                requirements=requirements
+            )
+            
+            return jsonify({
+                'success': result.get('success', False),
+                'tool': tool_name,
+                'result': result.get('result'),
+                'error': result.get('error'),
+                'executed_in_docker': True,
+                'timestamp': datetime.utcnow().isoformat()
+            })
+        else:
+            # Fallback to direct execution
+            result = registry.execute_tool(tool_name, params)
+            return jsonify({
+                'success': True,
+                'tool': tool_name,
+                'result': result,
+                'executed_in_docker': False,
+                'timestamp': datetime.utcnow().isoformat()
+            })
     except ValueError as e:
         return jsonify({
             'success': False,
@@ -405,13 +454,76 @@ def execute_tool(tool_name: str):
             'error': 'Internal server error during tool execution',
             'details': str(e)
         }), 500
+    
+@app.route('/tools/search', methods=['POST'])
+def search_tools_endpoint():
+    """Proxy endpoint for tool search"""
+    try:
+        data = request.get_json()
+        
+        if not data or not data.get('query'):
+            return jsonify({'error': 'Missing query parameter'}), 400
+        
+        query = data.get('query')
+        max_results = min(int(data.get('max_results', 3)), 5)
+        category = data.get('category')
+        
+        # Fix: Call search_engine.search() instead of search_tools()
+        results = search_engine.search(query, top_k=max_results, category=category)
+        
+        # Format results for response
+        formatted_results = []
+        for result in results:
+            formatted_results.append({
+                'tool_name': result['tool_name'],
+                'description': result['tool_info']['description'],
+                'category': result['tool_info']['category'],
+                'relevance_score': result['relevance_score'],
+                'required_params': result['tool_info']['required_params'],
+                'optional_params': result['tool_info']['optional_params'],
+                'tags': result['tool_info'].get('tags', []),
+                'score_breakdown': result['score_breakdown']
+            })
+        
+        return jsonify({
+            'success': True,
+            'query': query,
+            'results_count': len(formatted_results),
+            'results': formatted_results
+        })
+    except Exception as e:
+        logger.error(f"Error in search endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/tools/context/search', methods=['POST'])
+def get_search_context():
+    """Get LLM-friendly context for specific query"""
+    data = request.get_json()
+    
+    if not data or not data.get('query'):
+        return jsonify({'error': 'Missing query parameter'}), 400
+    
+    query = data.get('query')
+    max_tools = min(int(data.get('max_tools', 3)), 5)
+    
+    context = search_engine.get_tools_for_llm_context(query, max_tools=max_tools)
+    
+    return jsonify({
+        'query': query,
+        'context': context
+    })
 
 @app.route('/tools/reload', methods=['POST'])
 @require_auth
 def reload_tools():
     """Reload all tools from the tools directory"""
-    global registry
+    global registry, search_engine
     registry = ToolRegistry()
+    search_engine = ToolSearchEngine(registry)
     return jsonify({
         'success': True,
         'message': 'Tools reloaded successfully',
@@ -452,6 +564,11 @@ def get_tools_context():
         'available_tools_count': len(tools),
         'unavailable_tools_count': len(unavailable)
     })
+
+@app.route('/docker/status', methods=['GET'])
+def docker_status():
+    """Get Docker executor status"""
+    return jsonify(docker_executor.get_status())
 
 @app.errorhandler(404)
 def not_found(error):
