@@ -171,9 +171,36 @@ class ToolUseAgent:
 1. **respond**: Directly answer if you can with high confidence
 2. **fetch_tool**: Search for tools that can help answer the question
 3. **use_tool**: Execute a specific tool with parameters
-4. **create_tool**: Create a new tool if none exist for the task
+4. **create_tool**: Create a new tool ONLY as a last resort
 5. **exit_response**: Provide final answer and conclude
 6. **analyze_tools_for_composite**: Fetch detailed information about specific tools before creating a composite tool
+
+**🎯 TOOL USAGE PHILOSOPHY - READ CAREFULLY:**
+
+**ALWAYS PREFER EXISTING TOOLS OVER CREATING NEW ONES**
+- If a tool exists that does 80% of what you need, USE IT
+- Create composite tools that wrap/combine existing tools
+- Only create entirely new tools if NO existing tools can help
+
+**DECISION TREE FOR TOOL USAGE:**
+1. **First**: Search for existing tools (fetch_tool)
+2. **Second**: Can you use an existing tool directly? → use_tool
+3. **Third**: Can you create a simple composite tool that calls existing tools? → analyze_tools_for_composite → create_tool (composite)
+4. **Last Resort**: Create a brand new tool with new implementation
+
+**COMPOSITE TOOLS ARE YOUR FRIEND:**
+- If you need to chain operations, create a composite tool
+- If you need to combine results, create a composite tool
+- If you need to transform output of one tool for another, create a composite tool
+- Composite tools are MUCH better than reinventing functionality
+
+**Example Scenarios:**
+
+❌ **WRONG**: "I need to search news and summarize. Let me create a new tool that scrapes news websites..."
+✅ **RIGHT**: "I found a 'web_search' tool. Let me create a composite tool that calls web_search and formats results."
+
+❌ **WRONG**: "I need temperature conversion with logging. Let me implement temperature conversion from scratch..."
+✅ **RIGHT**: "I found 'fahrenheit_to_celsius' tool. Let me create a composite that calls it and adds logging."
 
 **CRITICAL: Analyzing Tool Results:**
 - When tools return search results or scraped content, ANALYZE and EXTRACT the relevant information
@@ -192,40 +219,35 @@ class ToolUseAgent:
 - Do NOT exit or respond without creating a tool when none exist for the task
 
 **COMPOSITE TOOLS - MANDATORY WORKFLOW:**
-Before creating a composite tool, you MUST:
-1. Use **fetch_tool** state to find potentially useful tools
-2. Use **analyze_tools_for_composite** state with tool names to get their full details (code, params, return schema)
-3. ONLY AFTER analyzing tool details, proceed to **create_tool** state
-
-**analyze_tools_for_composite action format:**
-{
-  "tool_names": ["tool1", "tool2", "tool3"]
-}
-
-This will fetch detailed information including:
-- Tool code implementation
-- Exact parameter names and types
-- Return value structure
-- Examples of usage
-
-**NEVER create a composite tool without first using analyze_tools_for_composite!**
-Hallucinating tool behavior leads to broken composite tools.
+Before creating ANY tool, you MUST:
+1. Use **fetch_tool** state to find existing tools
+2. **EVALUATE**: Can I use these tools directly? Can I compose them?
+3. If composition needed: Use **analyze_tools_for_composite** state
+4. Create a SIMPLE wrapper that calls existing tools
+5. ONLY create new implementation if truly no existing tools can help
 
 **Inside ANY tool code, you have access to `execute_tool(tool_name, params)` function:**
 ```python
-# Example: Use another tool inside your tool
-result1 = execute_tool('calculate_factorial', {'n': params['n']})
-result2 = execute_tool('count_characters', {'text': str(result1)})
-result = {'factorial': result1, 'length': result2}
+# Example 1: Simple wrapper
+search_results = execute_tool('web_search', {'query': params['query']})
+result = {'results': search_results, 'count': len(search_results)}
+
+# Example 2: Chain existing tools
+raw_data = execute_tool('fetch_data', {'url': params['url']})
+cleaned = execute_tool('clean_text', {'text': raw_data})
+result = cleaned
+
+# Example 3: Combine multiple existing tools
+temp_c = execute_tool('fahrenheit_to_celsius', {'fahrenheit': params['temp']})
+temp_k = execute_tool('celsius_to_kelvin', {'celsius': temp_c})
+result = {'celsius': temp_c, 'kelvin': temp_k}
 ```
 
-**Composite Tool Guidelines:**
-- Use execute_tool() to call other tools by name
-- Pass parameters as dictionaries matching EXACT param names from tool details
-- Handle errors with try/except blocks
-- Chain multiple tools for complex operations
-- Combine results from multiple tools
-- Base your implementation on ACTUAL tool code, not assumptions
+**⚠️ BEFORE CREATING A TOOL, ASK YOURSELF:**
+1. "Did I search for existing tools?" (If no → fetch_tool first)
+2. "Can I use an existing tool directly?" (If yes → use_tool)
+3. "Can I combine existing tools?" (If yes → analyze_tools_for_composite)
+4. "Do I REALLY need new implementation?" (Last resort only)
 
 **Response Format:**
 You MUST respond with ONLY valid JSON in this exact structure:
@@ -282,8 +304,20 @@ You MUST respond with ONLY valid JSON in this exact structure:
 - ALWAYS use analyze_tools_for_composite before creating composite tools
 """
 
-    def _generate_tool_code_prompt(self, tool_spec: Dict[str, Any]) -> str:
+    def _generate_tool_code_prompt(self, tool_spec: Dict[str, Any], available_tools: List[Dict[str, Any]] = None) -> str:
         """Generate a focused prompt for tool code generation"""
+        
+        # Build available tools section
+        tools_context = ""
+        if available_tools:
+            tools_context = "\n**AVAILABLE EXISTING TOOLS YOU MUST USE:**\n"
+            for tool in available_tools:
+                tools_context += f"- `{tool.get('name')}`: {tool.get('description')}\n"
+                tools_context += f"  Params: {tool.get('required_params', [])}\n"
+                if 'code' in tool:
+                    tools_context += f"  Implementation: {tool['code'][:200]}...\n"
+            tools_context += "\n**YOU MUST CALL THESE TOOLS USING execute_tool() - DO NOT REIMPLEMENT!**\n\n"
+        
         return f"""Generate ONLY executable Python code for the following tool. No explanations, no markdown, just raw Python code.
 
 **Tool Specification:**
@@ -293,41 +327,77 @@ You MUST respond with ONLY valid JSON in this exact structure:
 - Required Parameters: {tool_spec.get('required_params')}
 - Optional Parameters: {tool_spec.get('optional_params')}
 
+{tools_context}
+
 **CRITICAL REQUIREMENTS:**
-1. Import ALL necessary libraries at the top (requests, json, etc.)
-2. Access parameters via `params` dict (e.g., `query = params['query']`)
-3. Store the final output in a variable called `result`
-4. Use REAL libraries and APIs - NO placeholders or simulations, THE API MUST NOT BE PAID OR FREEMIUM, IT SHOULD BE FULLY FREE IF NOT JUST DO SCRAPING
-5. Handle errors with try/except blocks
-6. For web searches: Use multiple fallback sources if primary fails
-7. Return structured data with meaningful information even if API returns empty
-8. Include user-friendly messages when no results are found
+1. **MANDATORY**: If ANY existing tools are listed above, you MUST use `execute_tool(tool_name, params)` to call them
+2. **DO NOT reimplement** functionality that existing tools already provide
+3. Access parameters via `params` dict (e.g., `query = params['query']`)
+4. Store the final output in a variable called `result`
+5. Handle errors with try/except blocks when calling execute_tool()
 
-**COMPOSITE TOOL CAPABILITY:**
-You can call OTHER existing tools using `execute_tool(tool_name, params)`:
+**COMPOSITE TOOL RULES - EXTREMELY IMPORTANT:**
+If this tool's description mentions or implies using existing functionality:
+- **STEP 1**: Call the existing tool(s) using execute_tool()
+- **STEP 2**: Process/format the result if needed
+- **STEP 3**: Return the processed result
+
+**DO THIS (Composite Tool Pattern):**
 ```python
-# Example 1: Chain tools
-fahrenheit = execute_tool('celsius_to_fahrenheit', {{'celsius': params['temp']}})
-kelvin = execute_tool('fahrenheit_to_kelvin', {{'fahrenheit': fahrenheit}})
-result = kelvin
+# Example: Search and format tool
+try:
+    # Call existing tool
+    search_data = execute_tool('web_search', {{'query': params['query'], 'max_results': params.get('max_results', 5)}})
+    
+    # Process the result
+    if search_data.get('success'):
+        results = search_data.get('result', {{}})
+        formatted = {{
+            'query': params['query'],
+            'total_results': len(results.get('items', [])),
+            'top_results': results.get('items', [])[:3]
+        }}
+        result = formatted
+    else:
+        result = {{'error': 'Search failed', 'details': search_data.get('error')}}
+except Exception as e:
+    result = {{'error': str(e), 'success': False}}
+```
 
-# Example 2: Combine multiple tools
-factorial = execute_tool('calculate_factorial', {{'n': params['n']}})
-char_count = execute_tool('count_characters', {{'text': str(factorial)}})
-result = {{'factorial': factorial, 'length': char_count}}
+**DO THIS (Chain Multiple Tools):**
+```python
+# Example: Multi-step tool
+try:
+    # Step 1: Fetch data
+    data = execute_tool('fetch_web_content', {{'url': params['url']}})
+    
+    # Step 2: Process with another tool
+    if data.get('success'):
+        processed = execute_tool('extract_text', {{'html': data['result']}})
+        result = processed.get('result')
+    else:
+        result = {{'error': 'Failed to fetch', 'details': data}}
+except Exception as e:
+    result = {{'error': str(e)}}
+```
 
-# Example 3: Conditional tool usage
-if params['operation'] == 'add':
-    result = execute_tool('add_numbers', {{'a': params['x'], 'b': params['y']}})
-else:
-    result = execute_tool('multiply_numbers', {{'a': params['x'], 'b': params['y']}})
+**DO NOT DO THIS (Reimplementing):**
+```python
+# ❌ WRONG - Reimplementing search functionality
+import requests
+response = requests.get('https://api.search.com/...')  # NO! Use execute_tool() instead!
 ```
 
 **When to Use execute_tool():**
-- If existing tools can solve part of the problem, USE THEM
-- Build on existing functionality rather than reimplementing
-- Create workflows by chaining multiple tools
-- Handle errors from tool execution with try/except
+- **ALWAYS** when existing tools can do part of the work
+- To chain operations: tool1 → tool2 → tool3
+- To combine results from multiple tools
+- To add validation/formatting around existing tool output
+
+**When to Write New Code:**
+- Only for formatting/processing tool results
+- Only for orchestration logic between tools
+- NEVER for reimplementing existing functionality
 
 **Generate the code NOW (code only, no explanation):"""
 
@@ -396,6 +466,12 @@ else:
                 text = text[:-3]
             text = text.strip()
             
+            # Try to find JSON object boundaries if surrounded by text
+            json_start = text.find('{')
+            json_end = text.rfind('}')
+            if json_start != -1 and json_end != -1:
+                text = text[json_start:json_end + 1]
+            
             data = json.loads(text)
             
             # Handle common field name variations
@@ -409,20 +485,46 @@ else:
             # Normalize parameter field name for use_tool state
             if data.get('state') == 'use_tool' and data.get('action'):
                 action = data['action']
-                # If 'parameters' is used instead of 'params', rename it
                 if 'parameters' in action and 'params' not in action:
                     action['params'] = action.pop('parameters')
-                # Ensure params exists
                 if 'params' not in action:
                     action['params'] = {}
             
+            # Validate and clean tool creation code
+            if data.get('state') == 'create_tool' and data.get('action', {}).get('code'):
+                # Ensure code doesn't break JSON serialization
+                code = data['action']['code']
+                # Remove any null bytes or control characters
+                code = ''.join(char for char in code if ord(char) >= 32 or char in '\n\r\t')
+                data['action']['code'] = code
+            
             return AgentState(**data)
+        except json.JSONDecodeError as e:
+            print(f"JSON Parse Error at line {e.lineno}, col {e.colno}")
+            print(f"Failed to parse response (first 500 chars):\n{response_text[:500]}")
+            print(f"Error: {e}")
+            
+            # Try to extract reasoning if present
+            reasoning = "Failed to parse JSON response"
+            if "reasoning" in response_text:
+                try:
+                    reasoning_match = re.search(r'"reasoning":\s*"([^"]*(?:\\.[^"]*)*)"', response_text)
+                    if reasoning_match:
+                        reasoning = reasoning_match.group(1)
+                except:
+                    pass
+            
+            return AgentState(
+                state="exit_response",
+                reasoning=reasoning,
+                action={"final_answer": f"JSON parsing error: {str(e)}", "confidence": "low"}
+            )
         except Exception as e:
-            print(f"Failed to parse response: {response_text}")
+            print(f"Unexpected error parsing response: {response_text}")
             print(f"Error: {e}")
             return AgentState(
                 state="exit_response",
-                reasoning=f"Failed to parse response: {str(e)}",
+                reasoning=f"Unexpected parsing error: {str(e)}",
                 action={"final_answer": "Error in processing", "confidence": "low"}
             )
     
@@ -583,11 +685,28 @@ else:
         elif state.state == "create_tool":
             print(f"Creating new tool: {state.action.get('name')}")
             
+            # 🔍 VALIDATION: Ensure existing tools were considered
+            if not context.fetched_tools:
+                print("⛔ BLOCKING: Cannot create tool without first searching for existing tools!")
+                return {
+                    "error": "You must use 'fetch_tool' state before creating a new tool",
+                    "success": False,
+                    "message": "Always search for existing tools first. You might find tools you can reuse or compose."
+                }
+            
+            # Check if this could use existing tools instead
+            tool_desc = state.action.get('description', '').lower()
+            existing_tool_names = [t.get('name', '') for t in context.fetched_tools]
+            
+            if existing_tool_names and len(existing_tool_names) > 0:
+                print(f"⚠️ NOTE: {len(existing_tool_names)} existing tools available: {existing_tool_names}")
+                print("Consider creating a composite tool that uses these instead of reimplementing.")
+            
             # Validate: If this might be a composite tool, ensure tools were analyzed
             if context.fetched_tools:
                 has_detailed_info = any('code' in tool for tool in context.fetched_tools)
                 tool_desc = state.action.get('description', '').lower()
-                seems_composite = any(keyword in tool_desc for keyword in ['combine', 'chain', 'multiple', 'using', 'execute_tool'])
+                seems_composite = any(keyword in tool_desc for keyword in ['combine', 'chain', 'multiple', 'using', 'execute_tool', 'search', 'fetch', 'get'])
                 
                 if seems_composite and not has_detailed_info:
                     print("⚠️ WARNING: Attempting to create composite tool without analyzing tool details!")
@@ -597,8 +716,11 @@ else:
                         "message": "Use analyze_tools_for_composite to fetch tool details before creating composite tools"
                     }
             
-            # Step 1: Generate focused prompt for code generation
-            code_prompt = self._generate_tool_code_prompt(state.action)
+            # Sanitize tool action data before sending to Gemini
+            sanitized_action = state.action.copy()
+            
+            # Step 1: Generate focused prompt for code generation WITH available tools context
+            code_prompt = self._generate_tool_code_prompt(sanitized_action, context.fetched_tools)
             
             print("\n" + "="*60)
             print("Requesting tool code from Gemini...")
@@ -622,13 +744,16 @@ else:
                     generated_code = generated_code[:-3]
                 generated_code = generated_code.strip()
                 
+                # Remove any problematic characters for JSON serialization
+                generated_code = generated_code.replace('\x00', '')
+                
                 print("\n" + "="*60)
                 print("Generated Tool Code:")
                 print("="*60)
                 print(generated_code)
                 print("="*60 + "\n")
                 
-                # Step 3: Validate code
+                # Step 3: Validate code - CHECK FOR execute_tool() usage
                 forbidden_patterns = [
                     'placeholder',
                     'simulated',
@@ -648,6 +773,21 @@ else:
                         "success": False,
                         "generated_code": generated_code
                     }
+                
+                # NEW VALIDATION: Check if composite tool should use execute_tool()
+                if context.fetched_tools and len(context.fetched_tools) > 0:
+                    has_execute_tool = 'execute_tool(' in generated_code
+                    seems_composite = any(keyword in tool_desc for keyword in ['search', 'fetch', 'get', 'find', 'retrieve'])
+                    
+                    if seems_composite and not has_execute_tool:
+                        print("⚠️ REJECTED: Tool should use existing tools via execute_tool() but doesn't!")
+                        existing_names = [t.get('name', 'unknown') for t in context.fetched_tools]
+                        return {
+                            "error": f"This tool should call existing tools {existing_names} using execute_tool(), but the generated code doesn't use it. REIMPLEMENT AS COMPOSITE TOOL.",
+                            "success": False,
+                            "generated_code": generated_code,
+                            "suggestion": f"The code should call execute_tool('{existing_names[0]}', params) instead of reimplementing."
+                        }
                 
                 # Step 4: Ensure result variable exists
                 if 'result =' not in generated_code and 'result=' not in generated_code:
@@ -671,11 +811,13 @@ else:
                     "success": True,
                     "tool_id": result.get('id'),
                     "tool_name": result.get('name'),
-                    "generated_code": generated_code
+                    "generated_code": generated_code[:200] + "..." if len(generated_code) > 200 else generated_code
                 }
                 
             except Exception as e:
+                import traceback
                 print(f"Failed to create tool: {e}")
+                print(f"Full traceback: {traceback.format_exc()}")
                 return {"error": str(e), "success": False}
         
         elif state.state == "exit_response":
