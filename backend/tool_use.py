@@ -142,21 +142,36 @@ class GeminiAPIManager:
                     model=model,
                     contents=contents
                 )
+                
+                # Check if response contains an error before returning
+                # Try to access the text to trigger any errors
+                _ = response.text
+                
                 return response
                 
             except Exception as e:
                 error_msg = str(e).lower()
                 last_error = e
                 
-                if any(keyword in error_msg for keyword in ['overload', 'quota', 'rate limit', '429', '503']):
-                    print(f"API key #{key_number} overloaded: {e}")
+                # Expanded error detection patterns
+                if any(keyword in error_msg for keyword in [
+                    'overload', 'quota', 'rate limit', 'rate_limit', 
+                    'resource_exhausted', '429', '503', '500', 'billing'
+                ]):
+                    print(f"API key #{key_number} quota/rate limit error: {e}")
                     if attempt < max_retries - 1:
-                        print(f"Switching to next API key...")
+                        print(f"⚠️ Switching to next API key immediately...")
+                        # Don't wait the full interval between retries for quota errors
+                        time.sleep(2)  # Just a brief pause before switching keys
                         continue
+                    else:
+                        print(f"❌ All {max_retries} API keys exhausted")
                 else:
+                    # For non-quota errors, fail immediately
+                    print(f"❌ Non-recoverable error: {e}")
                     raise e
         
-        raise Exception(f"All {max_retries} API keys failed. Last error: {last_error}")
+        raise Exception(f"All {max_retries} API keys failed due to quota/rate limits. Last error: {last_error}")
 
 # Gemini Agent
 class ToolUseAgent:
@@ -174,6 +189,25 @@ class ToolUseAgent:
 4. **create_tool**: Create a new tool ONLY as a last resort
 5. **exit_response**: Provide final answer and conclude
 6. **analyze_tools_for_composite**: Fetch detailed information about specific tools before creating a composite tool
+
+**🎯 STATE SELECTION RULES:**
+
+**CRITICAL - READ THIS:**
+- **respond**: ONLY for intermediate observations during multi-step processes. DO NOT USE FOR FINAL ANSWERS.
+- **exit_response**: ALWAYS use this when providing a final answer to end the conversation. This is the ONLY way to exit.
+- For simple questions (greetings, direct answers), use **exit_response** immediately with your answer.
+
+**Example for "hi" or greetings:**
+```json
+{
+  "state": "exit_response",
+  "reasoning": "Simple greeting - providing friendly response and exiting",
+  "action": {
+    "final_answer": "Hello! How can I help you today?",
+    "confidence": "high"
+  }
+}
+```
 
 **🎯 TOOL USAGE PHILOSOPHY - READ CAREFULLY:**
 
