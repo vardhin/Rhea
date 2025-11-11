@@ -24,7 +24,7 @@
             {/if}
         </button>
         <div class="brand">
-            <span class="brand-name">Rhea</span>
+            <span class="brand-name">Re-Act</span>
         </div>
     </div>
     <div class="nav-right">
