@@ -19,7 +19,7 @@ MIN_REQUEST_INTERVAL = 5.0  # seconds between requests
 
 # State Models
 class AgentState(BaseModel):
-    state: Literal["respond", "create_tool", "use_tool", "exit_response", "fetch_tool"]
+    state: Literal["respond", "create_tool", "use_tool", "exit_response", "fetch_tool", "analyze_tools_for_composite"]
     reasoning: str
     action: Optional[Dict[str, Any]] = None
 
@@ -62,6 +62,13 @@ class ToolStoreClient:
         if response.status_code == 200:
             return response.json()
         return []
+    
+    def get_tool_details(self, tool_name: str) -> Dict[str, Any]:
+        """Get detailed information about a specific tool including its code"""
+        response = requests.get(f"{self.base_url}/tools/name/{tool_name}")
+        if response.status_code == 200:
+            return response.json()
+        return {}
     
     def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool by name"""
@@ -166,6 +173,7 @@ class ToolUseAgent:
 3. **use_tool**: Execute a specific tool with parameters
 4. **create_tool**: Create a new tool if none exist for the task
 5. **exit_response**: Provide final answer and conclude
+6. **analyze_tools_for_composite**: Fetch detailed information about specific tools before creating a composite tool
 
 **CRITICAL: Analyzing Tool Results:**
 - When tools return search results or scraped content, ANALYZE and EXTRACT the relevant information
@@ -183,11 +191,25 @@ class ToolUseAgent:
 - If fetch_tool finds NO tools or NO APPROPRIATE tools, you MUST immediately transition to create_tool state
 - Do NOT exit or respond without creating a tool when none exist for the task
 
-**COMPOSITE TOOLS - Tool Chaining:**
-You can create tools that use OTHER existing tools! This is powerful for:
-- Combining multiple operations
-- Creating workflows
-- Reusing existing functionality
+**COMPOSITE TOOLS - MANDATORY WORKFLOW:**
+Before creating a composite tool, you MUST:
+1. Use **fetch_tool** state to find potentially useful tools
+2. Use **analyze_tools_for_composite** state with tool names to get their full details (code, params, return schema)
+3. ONLY AFTER analyzing tool details, proceed to **create_tool** state
+
+**analyze_tools_for_composite action format:**
+{
+  "tool_names": ["tool1", "tool2", "tool3"]
+}
+
+This will fetch detailed information including:
+- Tool code implementation
+- Exact parameter names and types
+- Return value structure
+- Examples of usage
+
+**NEVER create a composite tool without first using analyze_tools_for_composite!**
+Hallucinating tool behavior leads to broken composite tools.
 
 **Inside ANY tool code, you have access to `execute_tool(tool_name, params)` function:**
 ```python
@@ -199,15 +221,16 @@ result = {'factorial': result1, 'length': result2}
 
 **Composite Tool Guidelines:**
 - Use execute_tool() to call other tools by name
-- Pass parameters as dictionaries
+- Pass parameters as dictionaries matching EXACT param names from tool details
 - Handle errors with try/except blocks
 - Chain multiple tools for complex operations
 - Combine results from multiple tools
+- Base your implementation on ACTUAL tool code, not assumptions
 
 **Response Format:**
 You MUST respond with ONLY valid JSON in this exact structure:
 {
-  "state": "respond|fetch_tool|use_tool|create_tool|exit_response",
+  "state": "respond|fetch_tool|use_tool|create_tool|exit_response|analyze_tools_for_composite",
   "reasoning": "Explain your thought process and why you chose this state",
   "action": {
     // State-specific action data
@@ -219,7 +242,7 @@ You MUST respond with ONLY valid JSON in this exact structure:
 - **use_tool**: 
   {
     "tool_name": "exact_tool_name",
-    "params": {  // MUST use "params", NOT "parameters"
+    "params": {
       "param1": "value1",
       "param2": "value2"
     }
@@ -228,6 +251,11 @@ You MUST respond with ONLY valid JSON in this exact structure:
 - **fetch_tool**:
   {
     "query": "search query string"
+  }
+
+- **analyze_tools_for_composite**:
+  {
+    "tool_names": ["tool_name1", "tool_name2"]
   }
 
 - **create_tool**:
@@ -251,6 +279,7 @@ You MUST respond with ONLY valid JSON in this exact structure:
 **CRITICAL**: 
 - Use "reasoning" field, NOT "response" field
 - Use "params" field for tool parameters, NOT "parameters"
+- ALWAYS use analyze_tools_for_composite before creating composite tools
 """
 
     def _generate_tool_code_prompt(self, tool_spec: Dict[str, Any]) -> str:
@@ -311,7 +340,8 @@ else:
             for entry in context.history:
                 prompt += f"- {entry['state']}: {entry['reasoning']}\n"
                 if 'result' in entry:
-                    prompt += f"  Result: {entry['result']}\n"
+                    result_preview = str(entry['result'])[:200]
+                    prompt += f"  Result: {result_preview}...\n" if len(str(entry['result'])) > 200 else f"  Result: {entry['result']}\n"
             prompt += "\n"
         
         if context.fetched_tools:
@@ -325,11 +355,21 @@ else:
                 prompt += f"- **{name}**: {description}\n"
                 prompt += f"  Required params: {required_params}\n"
                 prompt += f"  Optional params: {optional_params}\n"
+                
+                # Show detailed code if available (from analyze_tools_for_composite)
+                if 'code' in tool:
+                    prompt += f"  Code preview: {tool['code'][:150]}...\n"
+                if 'return_schema' in tool:
+                    prompt += f"  Returns: {tool['return_schema']}\n"
             prompt += "\n"
             
-            # Add composite tool hint if multiple tools exist
+            # Add composite tool hint only if tools are fetched but NOT analyzed
             if len(context.fetched_tools) > 1:
-                prompt += "**Note:** You can create a COMPOSITE TOOL that uses multiple existing tools via execute_tool()!\n\n"
+                has_detailed_info = any('code' in tool for tool in context.fetched_tools)
+                if not has_detailed_info:
+                    prompt += "**⚠️ IMPORTANT:** To create a composite tool, first use 'analyze_tools_for_composite' state to fetch detailed tool information!\n\n"
+                else:
+                    prompt += "**✓ Tool details available:** You can now create a composite tool using the analyzed information.\n\n"
         
         if context.tool_execution_results:
             prompt += "**Tool Execution Results:**\n"
@@ -469,15 +509,39 @@ else:
             else:
                 tools = self.tool_store.list_tools()
             
+            # Store basic tool info (without code details)
             context.fetched_tools = tools
             print(f"Found {len(tools)} tools")
             return {"tools_found": len(tools), "tools": [t.get('name', 'Unknown') for t in tools]}
+        
+        elif state.state == "analyze_tools_for_composite":
+            tool_names = state.action.get('tool_names', [])
+            print(f"Analyzing tools for composite: {tool_names}")
+            
+            detailed_tools = []
+            for tool_name in tool_names:
+                tool_details = self.tool_store.get_tool_details(tool_name)
+                if tool_details:
+                    detailed_tools.append(tool_details)
+                    print(f"✓ Fetched details for: {tool_name}")
+                else:
+                    print(f"✗ Could not fetch details for: {tool_name}")
+            
+            # Replace fetched_tools with detailed versions
+            context.fetched_tools = detailed_tools
+            
+            return {
+                "success": True,
+                "analyzed_count": len(detailed_tools),
+                "tool_names": [t.get('name') for t in detailed_tools],
+                "details": "Full tool details including code, params, and return schemas fetched"
+            }
         
         elif state.state == "use_tool":
             tool_name = state.action.get('tool_name')
             params = state.action.get('params', {})
             
-            print(f"DEBUG - Full action dict: {state.action}")  # Add this line
+            print(f"DEBUG - Full action dict: {state.action}")
             print(f"Executing tool: {tool_name} with params: {params}")
             
             result = self.tool_store.execute_tool(tool_name, params)
@@ -518,6 +582,20 @@ else:
         
         elif state.state == "create_tool":
             print(f"Creating new tool: {state.action.get('name')}")
+            
+            # Validate: If this might be a composite tool, ensure tools were analyzed
+            if context.fetched_tools:
+                has_detailed_info = any('code' in tool for tool in context.fetched_tools)
+                tool_desc = state.action.get('description', '').lower()
+                seems_composite = any(keyword in tool_desc for keyword in ['combine', 'chain', 'multiple', 'using', 'execute_tool'])
+                
+                if seems_composite and not has_detailed_info:
+                    print("⚠️ WARNING: Attempting to create composite tool without analyzing tool details!")
+                    return {
+                        "error": "Cannot create composite tool without first using 'analyze_tools_for_composite' state",
+                        "success": False,
+                        "message": "Use analyze_tools_for_composite to fetch tool details before creating composite tools"
+                    }
             
             # Step 1: Generate focused prompt for code generation
             code_prompt = self._generate_tool_code_prompt(state.action)

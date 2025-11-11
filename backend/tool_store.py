@@ -142,6 +142,11 @@ class CodeToolManager:
             # Add tool executor if database session is provided
             if db:
                 exec_globals["execute_tool"] = self.get_tool_executor(db)
+            else:
+                # Provide a dummy execute_tool that raises an error
+                def no_db_execute_tool(tool_name: str, params: Dict[str, Any]):
+                    raise RuntimeError("Cannot execute tools without database session. execute_tool() is only available during tool execution via API.")
+                exec_globals["execute_tool"] = no_db_execute_tool
             
             # Capture stdout
             with contextlib.redirect_stdout(stdout_capture):
@@ -394,9 +399,9 @@ def execute_tool_by_id(tool_id: int, request: ExecuteRequest, db: Session = Depe
     if tool.is_bugged:
         raise HTTPException(status_code=400, detail="Tool is marked as bugged")
     
-    # Execute code with database session for tool chaining
+    # CRITICAL: Pass db session for tool chaining support
     start_time = datetime.utcnow()
-    result = manager.execute_code(tool.code, request.params, db)
+    result = manager.execute_code(tool.code, request.params, db)  # Pass db here!
     execution_time = (datetime.utcnow() - start_time).total_seconds()
     
     # Update execution stats

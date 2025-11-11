@@ -53,7 +53,7 @@
         // Ensure we have a current conversation
         let conversationId = $conversationStore.currentId;
         if (!conversationId) {
-            conversationId = await conversationActions.create(); // Changed from createConversation to create
+            conversationId = await conversationActions.create();
         }
         
         // Add user message
@@ -75,7 +75,7 @@
                 id: Date.now().toString() + '_assistant',
                 role: 'assistant',
                 content: '',
-                toolAgentSteps: [], // Track agent steps
+                toolAgentSteps: [],
                 timestamp: new Date().toISOString()
             };
             
@@ -138,7 +138,8 @@
                         break;
                         
                     case 'final':
-                        fullContent = `\n\n---\n\n### 🎯 Final Answer\n\n${message.data.answer}\n\n`;
+                        // CHANGED: Append final answer instead of replacing
+                        fullContent += `\n\n---\n\n### 🎯 Final Answer\n\n${message.data.answer}\n\n`;
                         fullContent += `**Confidence**: ${message.data.confidence}\n`;
                         fullContent += `**Iterations**: ${message.data.iterations}\n`;
                         conversationActions.updateLastMessage(conversationId, fullContent);
