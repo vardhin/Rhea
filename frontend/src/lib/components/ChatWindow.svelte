@@ -12,6 +12,7 @@
     let showToolsMenu = $state(false);
     let messagesContainer;
     let currentStream = null;
+    let textarea; // Add ref for textarea
     
     // Get current conversation using $derived
     const currentConversation = $derived(
@@ -32,6 +33,16 @@
         }
     }
     
+    // Auto-resize textarea - watch messageInput changes
+    $effect(() => {
+        // This will trigger whenever messageInput changes
+        messageInput;
+        if (textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+        }
+    });
+    
     $effect(() => {
         if (messages.length > 0) {
             setTimeout(scrollToBottom, 50);
@@ -41,6 +52,10 @@
     async function sendMessage() {
         if (!messageInput.trim() || isGenerating) return;
         await sendMessageToolAgent();
+        // Reset height after sending
+        if (textarea) {
+            textarea.style.height = 'auto';
+        }
     }
 
     // Improved parse function to handle the actual format
@@ -553,6 +568,7 @@
             </div>
             
             <textarea
+                bind:this={textarea}
                 bind:value={messageInput}
                 on:keydown={handleKeydown}
                 placeholder="Ask anything - Tool Agent will handle it..."
@@ -637,6 +653,32 @@
         animation: spin 2s linear infinite;
     }
 
+    .chat-window {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: var(--bg-primary);
+        position: relative;
+    }
+
+    .messages-container {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0 20px;
+    }
+
+    .messages {
+        max-width: 900px;
+        margin: 0 auto;
+        padding-top: 80px; /* Add space for first message below navbar */
+        padding-bottom: 20px;
+    }
+
+    .bottom-spacer {
+        height: 120px; /* Space for input area + extra padding */
+    }
+
     /* Welcome message enhanced */
     .welcome-message {
         text-align: center;
@@ -683,7 +725,7 @@
         align-items: center;
         gap: 12px;
         padding: 16px;
-        background: rgba(79, 70, 229, 0.1);
+        background: rgba(79, 70, 229, 0.15);
         border-left: 3px solid var(--accent-primary);
         border-radius: 8px;
         margin-bottom: 16px;
@@ -693,12 +735,12 @@
 
     /* Iteration card */
     .iteration-card {
-        background: var(--bg-tertiary);
-        border: 1px solid var(--border-primary);
+        background: #0a0a0a;
+        border: 1px solid #1a1a1a;
         border-radius: 12px;
         padding: 20px;
         margin-bottom: 20px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
     }
 
     .iteration-header {
@@ -720,19 +762,19 @@
 
     /* Agent step */
     .agent-step {
-        background: var(--bg-secondary);
-        border: 1px solid var(--border-primary);
+        background: #0f0f0f;
+        border: 1px solid #1a1a1a;
         border-radius: 10px;
         padding: 16px;
         margin-bottom: 12px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
         transition: all 0.3s ease;
     }
 
     .agent-step:hover {
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
         transform: translateY(-2px);
-        border-color: var(--border-secondary);
+        border-color: #252525;
     }
 
     .step-state {
@@ -771,7 +813,7 @@
     /* Step sections */
     .step-reasoning {
         margin-bottom: 12px;
-        background: rgba(79, 70, 229, 0.08);
+        background: rgba(79, 70, 229, 0.12);
         padding: 12px;
         border-radius: 8px;
         border-left: 3px solid var(--accent-primary);
@@ -788,7 +830,7 @@
     .reasoning-text {
         font-size: 14px;
         line-height: 1.6;
-        color: var(--text-primary);
+        color: #e0e0e0;
     }
 
     .step-action, .step-result {
@@ -815,7 +857,7 @@
     }
 
     .code-block {
-        background: #0f1419;
+        background: #000000;
         color: #e2e8f0;
         padding: 12px;
         border-radius: 8px;
@@ -823,21 +865,21 @@
         font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
         overflow-x: auto;
         line-height: 1.5;
-        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6);
         max-height: 300px;
         overflow-y: auto;
-        border: 1px solid var(--border-primary);
+        border: 1px solid #1a1a1a;
     }
 
     .code-block.result {
-        background: #064e3b;
+        background: #001a12;
         color: #a7f3d0;
         border: 1px solid rgba(16, 185, 129, 0.3);
     }
 
     /* Final answer */
     .final-answer {
-        background: linear-gradient(135deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
+        background: linear-gradient(135deg, #0a0a0a 0%, #121212 100%);
         border: 2px solid var(--accent-primary);
         border-radius: 12px;
         padding: 24px;
@@ -851,7 +893,7 @@
         gap: 12px;
         font-size: 20px;
         font-weight: 700;
-        color: var(--text-primary);
+        color: #ffffff;
         margin-bottom: 16px;
         padding-bottom: 12px;
         border-bottom: 2px solid var(--accent-primary);
@@ -864,7 +906,7 @@
     .final-content {
         font-size: 15px;
         line-height: 1.7;
-        color: var(--text-primary);
+        color: #e0e0e0;
         margin-bottom: 16px;
         white-space: pre-wrap;
     }
@@ -880,12 +922,12 @@
         align-items: center;
         gap: 6px;
         padding: 6px 12px;
-        background: var(--bg-tertiary);
-        border: 1px solid var(--border-primary);
+        background: #0f0f0f;
+        border: 1px solid #1a1a1a;
         border-radius: 12px;
         font-size: 13px;
         font-weight: 600;
-        color: var(--text-secondary);
+        color: #b0b0b0;
     }
 
     .meta-badge.confidence-high {
@@ -962,16 +1004,16 @@
     }
 
     .code-block::-webkit-scrollbar-track {
-        background: rgba(0, 0, 0, 0.2);
+        background: rgba(0, 0, 0, 0.4);
         border-radius: 3px;
     }
 
     .code-block::-webkit-scrollbar-thumb {
-        background: var(--border-secondary);
+        background: #2a2a2a;
         border-radius: 3px;
     }
 
     .code-block::-webkit-scrollbar-thumb:hover {
-        background: var(--text-muted);
+        background: #3a3a3a;
     }
 </style>

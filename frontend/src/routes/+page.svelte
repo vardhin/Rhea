@@ -40,7 +40,6 @@
         display: flex;
         flex-direction: column;
         background: var(--bg-primary);
-        padding-top: 60px; /* Add padding for fixed navbar */
     }
 
     .content-container {
@@ -48,6 +47,7 @@
         display: flex;
         overflow: hidden;
         position: relative;
+        /* Remove padding-top completely */
     }
 
     .sidebar-container {
@@ -55,6 +55,7 @@
         height: 100%;
         position: relative;
         z-index: 10;
+        padding-top: 60px; /* Add padding here so sidebar content doesn't overlap navbar */
         transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
                     transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
                     visibility 0.3s;

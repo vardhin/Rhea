@@ -7,7 +7,7 @@
 
 <svelte:head>
     <link rel="icon" href={favicon} />
-    <title>Rhea - Advanced LLM Chat</title>
+    <title>Re-Act - Advanced LLM Chat</title>
 </svelte:head>
 
 <div class="app">

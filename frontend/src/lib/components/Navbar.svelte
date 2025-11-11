@@ -35,7 +35,9 @@
 <style>
     .navbar {
         height: 60px;
-        background: transparent;
+        backdrop-filter: blur(10px);
+        background: rgba(0, 0, 0, 0.3); /* Bright red to test */
+        -webkit-backdrop-filter: blur(10px);
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -47,6 +49,8 @@
         width: 100%;
         z-index: 100;
         box-sizing: border-box;
+        border-bottom: 1px solid var(--border-primary);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
     }
 
     .nav-left {
