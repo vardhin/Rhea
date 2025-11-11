@@ -36,19 +36,58 @@ TOOL_SERVER_USERNAME = os.getenv('TOOL_SERVER_USERNAME', 'admin')
 TOOL_SERVER_PASSWORD = os.getenv('TOOL_SERVER_PASSWORD', 'admin123')
 
 # Gemini Configuration
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash-exp')
 
-# Initialize Gemini
-if GEMINI_API_KEY:
-    set_api_key(GEMINI_API_KEY)
-    logger.info("✓ Gemini API key configured")
+# Load all available Gemini API keys
+GEMINI_API_KEYS = []
+for i in range(1, 9):  # Keys 1 through 8
+    key = os.getenv(f'GEMINI_API_KEY_{i}')
+    if key:
+        GEMINI_API_KEYS.append(key)
+
+# Track current key index
+_current_key_index = 0
+_key_lock = None  # Will be initialized with threading.Lock()
+
+# Initialize Gemini with first available key
+if GEMINI_API_KEYS:
+    set_api_key(GEMINI_API_KEYS[0])
+    logger.info(f"✓ Loaded {len(GEMINI_API_KEYS)} Gemini API key(s)")
+    logger.info(f"✓ Using API key 1/{len(GEMINI_API_KEYS)}")
+    
+    # Initialize lock for thread-safe key rotation
+    import threading
+    _key_lock = threading.Lock()
 else:
-    logger.warning("⚠ Gemini API key not found in environment")
+    logger.warning("⚠ No Gemini API keys found in environment")
 
 # Tool Server Authentication Token Cache
 _tool_server_token = None
 _token_expiry = None
+
+def get_next_gemini_key():
+    """Get the next Gemini API key in round-robin fashion"""
+    global _current_key_index
+    
+    if not GEMINI_API_KEYS:
+        return None
+    
+    with _key_lock:
+        # Move to next key
+        _current_key_index = (_current_key_index + 1) % len(GEMINI_API_KEYS)
+        next_key = GEMINI_API_KEYS[_current_key_index]
+        
+        # Update gemini_module with new key
+        set_api_key(next_key)
+        
+        logger.info(f"🔄 Rotated to API key {_current_key_index + 1}/{len(GEMINI_API_KEYS)}")
+        return next_key
+
+def get_current_key_info():
+    """Get current key information for logging"""
+    if not GEMINI_API_KEYS:
+        return "No keys available"
+    return f"Key {_current_key_index + 1}/{len(GEMINI_API_KEYS)}"
 
 def get_tool_server_token():
     """Get or refresh tool server authentication token"""
@@ -111,15 +150,16 @@ def search_tools(query, max_results=3, category=None):
         return []
 
 def get_tool_context_for_llm(query, max_tools=3):
-    """Get formatted tool context for LLM"""
+    """Get formatted tool context for LLM - excluding bugged tools"""
     try:
         response = requests.post(
             f"{TOOL_SERVER_URL}/tools/context/search",
             json={
                 'query': query,
-                'max_tools': max_tools
+                'max_tools': max_tools,
+                'exclude_bugged': True  # NEW: Exclude bugged tools
             },
-            timeout=10  # Add timeout
+            timeout=10
         )
         
         if response.status_code == 200:
@@ -217,6 +257,8 @@ def build_system_prompt():
 
 ### 1. Using Existing Tools
 **CRITICAL: If a tool exists that can solve the query, USE IT. Do not search for alternatives.**
+**IMPORTANT: Available tools are pre-filtered to exclude bugged tools. All shown tools are working.**
+
 When tools are provided in the context, analyze them carefully and use them if appropriate:
 ```json
 {
@@ -229,19 +271,7 @@ When tools are provided in the context, analyze them carefully and use them if a
 }
 ```
 
-**Tool Usage Priority:**
-- If ANY available tool can handle the request → use_tool
-- Mathematical calculations → use calculator/math tools (multiply, add, calculate)
-- Text processing → use text manipulation tools
-- File operations → use file tools
-- Data analysis → use data processing tools
-- Web searches → use web search/scraping tools
-- API calls → use HTTP/API tools
-
 ### 2. Searching for More Tools
-**Search if:**
-- No available tool matches but one MIGHT exist
-- You need to check what tools are available before creating
 ```json
 {
     "action": "search_tools",
@@ -251,111 +281,325 @@ When tools are provided in the context, analyze them carefully and use them if a
 ```
 
 ### 3. Creating New Tools
-**YOU SHOULD CREATE A TOOL IF:**
-- The query requires external data (web search, API calls, file reading)
-- The query needs computation that current tools can't handle
-- The query needs any capability not currently available
-- You searched and found no suitable tool
-
-**DO NOT refuse to answer - CREATE A TOOL INSTEAD!**
-
-Examples of when to create tools:
-- "What's the weather?" → Create a weather API tool
-- "Search for X news" → Create a web search/scraping tool
-- "Get latest Y" → Create a data fetching tool
-- "Calculate complex formula" → Create a specialized calculator
-- "Process this data" → Create a data processing tool
-
-**Tool Creation Template:**
 ```json
 {
     "action": "create_tool",
-    "tool_code": "from tool_server import tool\nimport requests\n\n@tool(name=\"tool_name\", category=\"category\", tags=[\"tag1\", \"tag2\"], requirements=[\"library1\",\"libarary2\"])\ndef function_name(param1: str) -> dict:\n    \"\"\"Tool description.\n    \n    Args:\n        param1: Parameter description\n    \n    Returns:\n        Result dictionary\n    \"\"\"\n    # Implementation\n    result = {}  # Your logic here\n    return result",
-    "tool_name": "tool_name",
-    "reasoning": "Why this tool is needed and what it will do"
+    "tool_name": "descriptive_tool_name",
+    "tool_code": "complete Python code here",
+    "reasoning": "Why this tool is needed"
 }
 ```
 
-**Common Tool Patterns:**
+### 4. Final Response
+**CRITICAL FORMAT: When providing the final answer, use this EXACT structure:**
+```json
+{
+    "action": "respond",
+    "response": "Your complete answer to the user's query here. Include all relevant information from tool results.",
+    "reasoning": "Optional: Brief explanation of how you arrived at this answer"
+}
+```
 
-**Web Search Tool:**
+**IMPORTANT:**
+- The "response" field MUST contain your complete answer
+- Do NOT use "answer" field - use "response"
+- Include all relevant information in the response
+- Make the response conversational and complete
+
+## CRITICAL TOOL CREATION RULES:
+
+### ✅ REQUIRED Error Handling Pattern:
+**ALL tools MUST raise exceptions on failure - NEVER return empty results silently!**
+
+```python
+from tool_server import tool
+import requests
+
+@tool(name="example_tool", category="example", tags=["demo"], requirements=["requests"])
+def example_tool(param: str) -> dict:
+    \"\"\"Tool description.
+    
+    Args:
+        param: Parameter description
+    
+    Returns:
+        Result dictionary with actual data
+    
+    Raises:
+        RuntimeError: If tool execution fails
+        ValueError: If parameters are invalid
+    \"\"\"
+    try:
+        # Your tool logic here
+        result = some_operation(param)
+        
+        # CRITICAL: Validate result before returning
+        if not result or len(result) == 0:
+            raise RuntimeError(f"Tool failed to get data for: {param}")
+        
+        return result
+        
+    except requests.RequestException as e:
+        # Re-raise network errors with context
+        raise RuntimeError(f"Network request failed: {str(e)}")
+    except Exception as e:
+        # Re-raise all other errors with context
+        raise RuntimeError(f"Tool execution failed: {str(e)}")
+```
+
+### ❌ WRONG - Don't Do This:
+```python
+# BAD: Silent failure with empty results
+def bad_tool(query: str) -> dict:
+    try:
+        results = fetch_data(query)
+        return {"results": results, "count": len(results)}  # Returns empty on failure!
+    except:
+        return {"results": [], "count": 0}  # Silent failure - BAD!
+```
+
+### ✅ CORRECT - Do This:
+```python
+# GOOD: Raises exception on failure
+def good_tool(query: str) -> dict:
+    try:
+        results = fetch_data(query)
+        
+        # Validate results
+        if not results:
+            raise RuntimeError(f"No data found for query: {query}")
+        
+        return {"results": results, "count": len(results)}
+        
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to fetch data: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Tool execution failed: {str(e)}")
+```
+
+### Required Tool Structure:
+```python
+from tool_server import tool
+import requests  # or other required libraries
+
+@tool(
+    name="tool_name",  # Unique, descriptive name
+    category="category",  # web, api, data, computation, etc.
+    tags=["tag1", "tag2"],  # Searchable tags
+    requirements=["requests", "beautifulsoup4"]  # pip packages needed
+)
+def tool_function(param1: str, param2: int = 10) -> dict:
+    \"\"\"Clear description of what the tool does.
+    
+    Args:
+        param1: Description of required parameter
+        param2: Description of optional parameter (default: 10)
+    
+    Returns:
+        Dictionary with results. Example: {"data": [...], "count": 5}
+    
+    Raises:
+        RuntimeError: If execution fails
+        ValueError: If parameters are invalid
+    \"\"\"
+    # ALWAYS validate inputs
+    if not param1 or not param1.strip():
+        raise ValueError("param1 cannot be empty")
+    
+    try:
+        # Tool logic here
+        result = perform_operation(param1, param2)
+        
+        # ALWAYS validate output before returning
+        if not result:
+            raise RuntimeError("Operation returned no results")
+        
+        return {"data": result, "count": len(result)}
+        
+    except SpecificError as e:
+        # Catch specific errors and re-raise with context
+        raise RuntimeError(f"Specific operation failed: {str(e)}")
+    except Exception as e:
+        # Catch all other errors
+        raise RuntimeError(f"Tool execution failed: {str(e)}")
+```
+
+### Common Tool Patterns:
+
+**Web Search Tool (with proper error handling):**
 ```python
 from tool_server import tool
 import requests
 from bs4 import BeautifulSoup
 
-@tool(name="web_search", category="web", tags=["search", "internet"], requirements=["requests","bs4"])
+@tool(name="web_search", category="web", tags=["search", "internet"], requirements=["requests", "beautifulsoup4"])
 def web_search(query: str, num_results: int = 5) -> dict:
-    \"\"\"Search the web for information.
+    \"\"\"Search the web for information using DuckDuckGo.
     
     Args:
-        query: Search query
-        num_results: Number of results to return
+        query: Search query string
+        num_results: Number of results to return (default: 5)
     
     Returns:
-        Search results with titles and snippets
+        Dictionary with search results: {"results": [...], "count": int}
+    
+    Raises:
+        ValueError: If query is empty
+        RuntimeError: If search fails or returns no results
     \"\"\"
-    # Use a search API or web scraping
-    # For demo, using DuckDuckGo HTML scraping
-    url = f"https://html.duckduckgo.com/html/?q={query}"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
+    # Validate input
+    if not query or not query.strip():
+        raise ValueError("Search query cannot be empty")
     
-    results = []
-    for result in soup.find_all('div', class_='result')[:num_results]:
-        title = result.find('a', class_='result__a')
-        snippet = result.find('a', class_='result__snippet')
-        if title and snippet:
-            results.append({
-                'title': title.get_text(),
-                'snippet': snippet.get_text(),
-                'url': title.get('href')
-            })
+    if num_results < 1 or num_results > 20:
+        raise ValueError("num_results must be between 1 and 20")
     
-    return {'results': results, 'count': len(results)}
+    try:
+        # Perform search
+        url = f"https://html.duckduckgo.com/html/?q={query}"
+        response = requests.get(url, timeout=10, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        response.raise_for_status()
+        
+        # Parse results
+        soup = BeautifulSoup(response.text, 'html.parser')
+        result_divs = soup.find_all('div', class_='result')
+        
+        if not result_divs:
+            raise RuntimeError(f"No search results found for query: {query}")
+        
+        results = []
+        for result in result_divs[:num_results]:
+            title_elem = result.find('a', class_='result__a')
+            snippet_elem = result.find('a', class_='result__snippet')
+            
+            if title_elem:
+                results.append({
+                    'title': title_elem.get_text(strip=True),
+                    'snippet': snippet_elem.get_text(strip=True) if snippet_elem else '',
+                    'url': title_elem.get('href', '')
+                })
+        
+        if not results:
+            raise RuntimeError(f"Failed to parse search results for query: {query}")
+        
+        return {'results': results, 'count': len(results)}
+        
+    except requests.Timeout:
+        raise RuntimeError(f"Search request timed out for query: {query}")
+    except requests.RequestException as e:
+        raise RuntimeError(f"Network error during search: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Web search failed: {str(e)}")
 ```
 
-**API Tool:**
+**API Tool (with proper error handling):**
 ```python
 from tool_server import tool
 import requests
 
-@tool(name="fetch_api_data", category="api", tags=["api", "data"], requirements=["requests"])
+@tool(name="fetch_api_data", category="api", tags=["api", "http"], requirements=["requests"])
 def fetch_api_data(url: str, params: dict = None) -> dict:
-    \"\"\"Fetch data from an API.
+    \"\"\"Fetch data from an API endpoint.
     
     Args:
         url: API endpoint URL
-        params: Query parameters
+        params: Optional query parameters dictionary
     
     Returns:
-        API response data
+        API response data as dictionary
+    
+    Raises:
+        ValueError: If URL is invalid
+        RuntimeError: If API request fails
     \"\"\"
-    response = requests.get(url, params=params)
-    return response.json()
+    # Validate input
+    if not url or not url.startswith(('http://', 'https://')):
+        raise ValueError(f"Invalid URL: {url}")
+    
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Validate response
+        if not data:
+            raise RuntimeError(f"API returned empty response from: {url}")
+        
+        return data
+        
+    except requests.Timeout:
+        raise RuntimeError(f"API request timed out: {url}")
+    except requests.HTTPError as e:
+        raise RuntimeError(f"API returned error {e.response.status_code}: {str(e)}")
+    except requests.RequestException as e:
+        raise RuntimeError(f"Network error calling API: {str(e)}")
+    except ValueError as e:
+        raise RuntimeError(f"API response is not valid JSON: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"API request failed: {str(e)}")
 ```
 
-### 4. Direct Response
-**ONLY use this when:**
-- Question is purely informational (definitions, explanations)
-- No external data or computation needed
-- You have the answer in your training data
+**Weather Tool Example:**
+```python
+from tool_server import tool
+import requests
 
-```json
-{
-    "action": "respond",
-    "response": "Your answer"
-}
+@tool(name="get_weather", category="api", tags=["weather", "forecast"], requirements=["requests"])
+def get_weather(location: str) -> dict:
+    \"\"\"Get current weather for a location using wttr.in service.
+    
+    Args:
+        location: City name or location query
+    
+    Returns:
+        Weather information dictionary
+    
+    Raises:
+        ValueError: If location is empty
+        RuntimeError: If weather fetch fails
+    \"\"\"
+    if not location or not location.strip():
+        raise ValueError("Location cannot be empty")
+    
+    try:
+        url = f"https://wttr.in/{location}?format=j1"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if not data or 'current_condition' not in data:
+            raise RuntimeError(f"Invalid weather data for location: {location}")
+        
+        current = data['current_condition'][0]
+        
+        return {
+            'location': location,
+            'temperature': current.get('temp_C', 'N/A'),
+            'condition': current.get('weatherDesc', [{}])[0].get('value', 'N/A'),
+            'humidity': current.get('humidity', 'N/A'),
+            'wind_speed': current.get('windspeedKmph', 'N/A')
+        }
+        
+    except requests.Timeout:
+        raise RuntimeError(f"Weather request timed out for: {location}")
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to fetch weather: {str(e)}")
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"Failed to parse weather data: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Weather lookup failed: {str(e)}")
 ```
-
-## Decision Priority:
-1. **First**: Check if an available tool matches → use_tool
-2. **Second**: If query needs external data/computation → search_tools
-3. **Third**: If no tool found and capability needed → **CREATE_TOOL** (DO NOT REFUSE!)
-4. **Last**: Only for pure informational queries → respond
 
 ## Critical Rules:
 - **NEVER say "I cannot" without trying to create a tool first**
+- **ALWAYS raise exceptions on tool failures** - never return empty results silently
+- **ALWAYS validate inputs and outputs** in tools
+- **If a tool is marked as BUGGED, create a NEW tool with a DIFFERENT name**
+- **DO NOT retry bugged tools** - the system already tried twice
 - If you need web access, create a web search/scraping tool
 - If you need APIs, create an API calling tool
 - If you need computation, create a calculation tool
@@ -365,14 +609,10 @@ def fetch_api_data(url: str, params: dict = None) -> dict:
 - After creating a tool, USE IT in the next iteration
 - Include necessary imports (requests, BeautifulSoup, etc.) in tool code
 
-## Multi-Step Workflow Example:
-User: "What's the latest news about X?"
-Step 1: search_tools → No web search tool found
-Step 2: create_tool → Create web_search tool
-Step 3: use_tool → Use newly created web_search tool
-Step 4: respond → Provide answer based on tool result
-
-**Remember: Your goal is to SOLVE the user's query, not to explain why you can't!**"""
+**Remember: Your goal is to SOLVE the user's query, not to explain why you can't!**
+**Remember: Tools must FAIL LOUDLY with exceptions, not silently with empty results!**
+**Remember: Bugged tools are automatically excluded from available tools - create new ones with different names!**
+**Remember: Always use "response" field for final answers, never "answer"!**"""
 
 def parse_gemini_response(response_text):
     """Parse Gemini's JSON response, handling multiline code blocks"""
@@ -524,6 +764,7 @@ def agent_loop(query, max_tools, use_docker, max_iterations, internal_history, a
     """
     Main agent loop that continues until Gemini provides a final response
     """
+    import time
     iteration = 0
     
     while iteration < max_iterations:
@@ -544,14 +785,89 @@ def agent_loop(query, max_tools, use_docker, max_iterations, internal_history, a
             # Subsequent iterations: use conversation history
             prompt = build_continuation_prompt(query, internal_history)
         
-        # Send to Gemini
-        logger.info(f"Sending prompt to Gemini (iteration {iteration})...")
-        response = send_message_to_gemini_model(
-            model=GEMINI_MODEL,
-            message=prompt,
-            stream=False,
-            system_message=""
-        )
+        # Send to Gemini with enhanced retry logic and key rotation
+        logger.info(f"Sending prompt to Gemini (iteration {iteration}, {get_current_key_info()})...")
+        
+        # Try each API key twice before giving up
+        max_retries = len(GEMINI_API_KEYS) * 2 if GEMINI_API_KEYS else 6
+        base_retry_delay = 5  # Increased from 2 to 5 seconds
+        
+        response = None
+        for retry in range(max_retries):
+            try:
+                # Add delay before each request (except first)
+                if retry > 0:
+                    # Exponential backoff: 5s, 10s, 20s, 40s, etc.
+                    delay = min(base_retry_delay * (2 ** (retry - 1)), 60)  # Cap at 60 seconds
+                    logger.info(f"⏳ Waiting {delay} seconds before retry...")
+                    time.sleep(delay)
+                
+                response = send_message_to_gemini_model(
+                    model=GEMINI_MODEL,
+                    message=prompt,
+                    stream=False,
+                    system_message=""
+                )
+                
+                # Success - add a small delay after successful request
+                logger.info("✓ Request successful, adding 3 second cooldown...")
+                time.sleep(3)
+                break  # Success, exit retry loop
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Check if it's a rate limit or overload error
+                if any(keyword in error_msg for keyword in ['overloaded', 'rate limit', 'quota', '429', '503', 'resource_exhausted']):
+                    if retry < max_retries - 1:
+                        # Rotate to next API key
+                        old_key_info = get_current_key_info()
+                        get_next_gemini_key()
+                        new_key_info = get_current_key_info()
+                        
+                        logger.warning(f"⚠️  Model overloaded/rate limited on {old_key_info}")
+                        logger.info(f"🔄 Rotating to {new_key_info} (attempt {retry + 1}/{max_retries})")
+                        
+                        continue
+                    else:
+                        logger.error(f"❌ Model overloaded after {max_retries} attempts across all API keys")
+                        return {
+                            'success': False,
+                            'error': f'All Gemini API keys are currently overloaded after {max_retries} attempts. The service is experiencing high load. Please try again in a few minutes.',
+                            'error_type': 'all_keys_overloaded',
+                            'iterations': iteration,
+                            'actions_taken': actions_taken,
+                            'keys_tried': len(GEMINI_API_KEYS) if GEMINI_API_KEYS else 0,
+                            'total_attempts': max_retries
+                        }
+                else:
+                    # Different error type - log and return
+                    logger.error(f"❌ Gemini API error ({get_current_key_info()}): {str(e)}")
+                    
+                    # If it's a transient error, retry with exponential backoff
+                    if retry < max_retries - 1 and any(keyword in error_msg for keyword in ['timeout', 'connection', 'network']):
+                        logger.warning(f"⚠️  Transient error, will retry...")
+                        continue
+                    
+                    return {
+                        'success': False,
+                        'error': f'Gemini API error: {str(e)}',
+                        'error_type': 'api_error',
+                        'iterations': iteration,
+                        'actions_taken': actions_taken,
+                        'current_key': get_current_key_info()
+                    }
+        
+        # Check if we got a response
+        if response is None:
+            logger.error("❌ Failed to get response from Gemini after all retries")
+            return {
+                'success': False,
+                'error': 'Failed to get response from Gemini after all retry attempts',
+                'error_type': 'no_response',
+                'iterations': iteration,
+                'actions_taken': actions_taken
+            }
         
         logger.info(f"Gemini response preview: {response[:200]}...")
         
@@ -572,10 +888,24 @@ def agent_loop(query, max_tools, use_docker, max_iterations, internal_history, a
         if action == 'respond':
             # Final response - exit loop
             logger.info("Gemini provided final response, exiting agent loop")
+            
+            # Extract response from multiple possible fields
+            response_text = (
+                parsed_response.get('response') or 
+                parsed_response.get('answer') or 
+                parsed_response.get('details', {}).get('answer') or
+                parsed_response.get('details', {}).get('response') or
+                ''
+            )
+            
+            if not response_text:
+                logger.warning(f"Empty response detected. Full parsed response: {parsed_response}")
+                response_text = "I was unable to generate a proper response. Please try rephrasing your question."
+            
             return {
                 'success': True,
                 'action': 'respond',
-                'response': parsed_response.get('response', ''),
+                'response': response_text,
                 'reasoning': parsed_response.get('reasoning', ''),
                 'iterations': iteration,
                 'actions_taken': actions_taken,
@@ -598,7 +928,9 @@ def agent_loop(query, max_tools, use_docker, max_iterations, internal_history, a
                     'content': f"Tool execution failed: {tool_result.get('error', 'Unknown error')}"
                 })
             
-            # Continue to next iteration
+            # Add delay between iterations (reduced since we now wait after tool execution)
+            logger.info("⏳ Waiting 1 second before next iteration...")
+            time.sleep(1)
             continue
         
         elif action == 'search_tools':
@@ -610,7 +942,9 @@ def agent_loop(query, max_tools, use_docker, max_iterations, internal_history, a
                 internal_history
             )
             
-            # Continue to next iteration
+            # Add delay between iterations
+            logger.info("⏳ Waiting 2 seconds before next iteration...")
+            time.sleep(2)
             continue
         
         elif action == 'create_tool':
@@ -620,7 +954,8 @@ def agent_loop(query, max_tools, use_docker, max_iterations, internal_history, a
                 internal_history
             )
             
-            # Continue to next iteration
+            # No additional delay here - handle_create_tool already waits 5 seconds
+            logger.info("⏳ Proceeding to next iteration...")
             continue
         
         else:
@@ -630,6 +965,10 @@ def agent_loop(query, max_tools, use_docker, max_iterations, internal_history, a
                 'role': 'system',
                 'content': f"Unknown action '{action}' received. Please choose from: use_tool, search_tools, create_tool, or respond."
             })
+            
+            # Add delay between iterations
+            logger.info("⏳ Waiting 2 seconds before next iteration...")
+            time.sleep(2)
             continue
     
     # Max iterations reached
@@ -688,7 +1027,9 @@ Respond with valid JSON."""
 
 
 def handle_use_tool(parsed_response, query, use_docker, internal_history):
-    """Handle use_tool action"""
+    """Handle use_tool action with retry logic"""
+    import time
+    
     tool_name = parsed_response.get('tool_name')
     parameters = parsed_response.get('parameters', {})
     reasoning = parsed_response.get('reasoning', '')
@@ -701,40 +1042,117 @@ def handle_use_tool(parsed_response, query, use_docker, internal_history):
         'content': f"I will use the tool '{tool_name}' with parameters {json.dumps(parameters)}. Reasoning: {reasoning}"
     })
     
-    # Execute tool
-    execution_result = execute_tool_with_docker(tool_name, parameters, use_docker)
+    # Retry logic: Try up to 2 times
+    max_retries = 2
+    last_error = None
     
-    # Add detailed result to history with better error context
-    if execution_result.get('success'):
-        result_content = f"""Tool '{tool_name}' executed successfully.
+    for attempt in range(1, max_retries + 1):
+        logger.info(f"Tool execution attempt {attempt}/{max_retries} for '{tool_name}'")
+        
+        # Execute tool
+        execution_result = execute_tool_with_docker(tool_name, parameters, use_docker)
+        
+        # Wait 2 seconds after getting response from tool server
+        logger.info("⏳ Waiting 2 seconds after tool execution response...")
+        time.sleep(2)
+        
+        # Check if execution was successful
+        if execution_result.get('success'):
+            result_content = f"""Tool '{tool_name}' executed successfully (attempt {attempt}/{max_retries}).
 Execution Method: {'Docker Container' if execution_result.get('executed_in_docker') else 'Direct'}
 Result: {json.dumps(execution_result.get('result'), indent=2)}
 
 Now use this result to answer the user's query. Do NOT create the tool again."""
-    else:
-        error_msg = execution_result.get('error', 'Unknown error')
-        result_content = f"""Tool '{tool_name}' execution FAILED.
+            
+            internal_history.append({
+                'role': 'system',
+                'content': result_content
+            })
+            
+            return execution_result
+        else:
+            # Execution failed
+            error_msg = execution_result.get('error', 'Unknown error')
+            last_error = error_msg
+            
+            # Check if tool is marked as bugged
+            if execution_result.get('is_bugged'):
+                # Tool is already marked as bugged, don't retry
+                result_content = f"""Tool '{tool_name}' is marked as BUGGED and cannot be used.
+Error: {error_msg}
+Failure Count: {execution_result.get('failure_count', 'unknown')}
+
+This tool has failed multiple times and has been flagged as problematic.
+
+DO NOT:
+- Try to use this tool again
+- Create a new version of this tool with the same name
+
+INSTEAD:
+- Create a NEW tool with a DIFFERENT name that solves the same problem
+- Use a different approach or different tool
+- If no alternative exists, explain to the user that this functionality is currently unavailable"""
+                
+                internal_history.append({
+                    'role': 'system',
+                    'content': result_content
+                })
+                
+                return execution_result
+            
+            # Not yet marked as bugged, but failed
+            if attempt < max_retries:
+                # Retry with longer delay
+                retry_delay = 3  # Increased from 1 to 3 seconds
+                retry_content = f"""Tool '{tool_name}' execution failed (attempt {attempt}/{max_retries}).
 Error: {error_msg}
 
-The tool exists but failed to execute. Possible reasons:
+Waiting {retry_delay} seconds before retrying..."""
+                
+                internal_history.append({
+                    'role': 'system',
+                    'content': retry_content
+                })
+                
+                logger.info(f"⏳ Waiting {retry_delay} seconds before tool retry...")
+                time.sleep(retry_delay)
+                continue
+            else:
+                # Max retries reached - tool will be marked as bugged
+                result_content = f"""Tool '{tool_name}' execution FAILED after {max_retries} attempts.
+Last Error: {error_msg}
+
+The tool has been automatically marked as BUGGED due to repeated failures.
+
+Possible reasons:
 1. The tool has a bug in its implementation
 2. Required dependencies are missing
 3. Network/API issues
 4. Invalid parameters
 
-DO NOT create the tool again. Instead:
-- If you can fix the tool, create a CORRECTED version with a different name
-- If the error is about missing the tool, search for it first
-- If you cannot proceed, explain the error to the user
+DO NOT:
+- Try to use this tool again
+- Create the tool again with the same name
+
+INSTEAD:
+- Create a CORRECTED tool with a DIFFERENT name
+- Use a completely different approach
+- Explain the issue to the user if no workaround exists
 
 Error details: {json.dumps(execution_result, indent=2)}"""
+                
+                internal_history.append({
+                    'role': 'system',
+                    'content': result_content
+                })
+                
+                return execution_result
     
-    internal_history.append({
-        'role': 'system',
-        'content': result_content
-    })
-    
-    return execution_result
+    # Should not reach here, but handle it anyway
+    return {
+        'success': False,
+        'error': last_error or 'Tool execution failed after all retries'
+    }
 
 def handle_search_tools(parsed_response, query, max_tools, internal_history):
     """Handle search_tools action"""
@@ -781,6 +1199,8 @@ def handle_search_tools(parsed_response, query, max_tools, internal_history):
 
 def handle_create_tool(parsed_response, internal_history):
     """Handle create_tool action"""
+    import time
+    
     tool_code = parsed_response.get('tool_code', '')
     tool_name = parsed_response.get('tool_name', '')
     reasoning = parsed_response.get('reasoning', '')
@@ -800,10 +1220,26 @@ def handle_create_tool(parsed_response, internal_history):
         # Reload tools on server
         reload_success = reload_tools_on_server()
         
+        # If reload failed, notify but don't fail completely
+        # Flask's auto-reloader will pick it up if in development mode
+        reload_message = "Tool server reloaded successfully" if reload_success else "Tool server reload failed (will reload automatically in dev mode)"
+        
+        # Wait 5 seconds after tool creation and reload to ensure tool is ready
+        if reload_success:
+            logger.info("⏳ Waiting 5 seconds for tool server to fully reload...")
+            time.sleep(5)
+        else:
+            # Wait for auto-reloader if in dev mode
+            if os.getenv('FLASK_ENV') == 'development':
+                logger.info("⏳ Waiting 5 seconds for Flask auto-reloader...")
+                time.sleep(5)
+        
         result_content = f"""Tool '{tool_name}' created successfully.
 File saved to: {filepath}
-Tool server reloaded: {reload_success}
-You can now use this tool with the 'use_tool' action."""
+{reload_message}
+
+IMPORTANT: You MUST use this tool in the next action. Do NOT create it again.
+Use the 'use_tool' action with the tool name '{tool_name}'."""
         
         internal_history.append({
             'role': 'system',
@@ -918,7 +1354,9 @@ def get_config():
         },
         'gemini': {
             'model': GEMINI_MODEL,
-            'configured': GEMINI_API_KEY is not None
+            'configured': len(GEMINI_API_KEYS) > 0,
+            'api_keys_count': len(GEMINI_API_KEYS),
+            'current_key': get_current_key_info() if GEMINI_API_KEYS else 'N/A'
         }
     })
 
@@ -937,6 +1375,7 @@ if __name__ == '__main__':
     logger.info(f"Starting Tool User Server on port {port}")
     logger.info(f"Tool Server URL: {TOOL_SERVER_URL}")
     logger.info(f"Gemini Model: {GEMINI_MODEL}")
+    logger.info(f"Gemini API Keys: {len(GEMINI_API_KEYS)} loaded")
     logger.info(f"Debug mode: {debug}")
     
     # Configure reloader to exclude tools directory

@@ -37,6 +37,7 @@ class ToolRegistry:
         self.tools_directory = Path(tools_directory)
         self.tools: Dict[str, Dict[str, Any]] = {}
         self.unavailable_tools: Dict[str, str] = {}  # tool_name -> error_message
+        self.bugged_tools: Dict[str, Dict[str, Any]] = {}  # NEW: Track buggy tools
         self._load_tools()
     
     def _load_tools(self):
@@ -127,10 +128,48 @@ class ToolRegistry:
         """Get list of tools that failed to load with error messages"""
         return self.unavailable_tools.copy()
     
-    def list_tools(self, include_unavailable: bool = False) -> Dict[str, Any]:
+    def mark_tool_as_bugged(self, tool_name: str, error_details: Dict[str, Any]):
+        """Mark a tool as bugged"""
+        if tool_name in self.tools:
+            tool = self.tools[tool_name]
+            if tool_name not in self.bugged_tools:
+                self.bugged_tools[tool_name] = {
+                    'tool_info': tool,
+                    'failures': [],
+                    'first_failure': datetime.utcnow().isoformat()
+                }
+            
+            self.bugged_tools[tool_name]['failures'].append({
+                'timestamp': datetime.utcnow().isoformat(),
+                'error': error_details
+            })
+            
+            logger.warning(f"⚠️ Tool '{tool_name}' marked as bugged (failures: {len(self.bugged_tools[tool_name]['failures'])})")
+    
+    def is_tool_bugged(self, tool_name: str) -> bool:
+        """Check if a tool is marked as bugged"""
+        return tool_name in self.bugged_tools
+    
+    def get_bugged_tools(self) -> Dict[str, Dict[str, Any]]:
+        """Get all bugged tools"""
+        return self.bugged_tools.copy()
+    
+    def clear_tool_bug_status(self, tool_name: str):
+        """Clear bug status for a tool"""
+        if tool_name in self.bugged_tools:
+            del self.bugged_tools[tool_name]
+            logger.info(f"✓ Bug status cleared for tool '{tool_name}'")
+    
+    def list_tools(self, include_unavailable: bool = False, exclude_bugged: bool = False) -> Dict[str, Any]:
         """List all available tools"""
-        tools_list = {
-            name: {
+        tools_list = {}
+        
+        for name, tool in self.tools.items():
+            # Skip bugged tools if requested
+            if exclude_bugged and name in self.bugged_tools:
+                continue
+                
+            tools_list[name] = {
                 'name': tool['name'],
                 'description': tool['description'],
                 'category': tool['category'],
@@ -138,10 +177,14 @@ class ToolRegistry:
                 'required_params': tool['required_params'],
                 'optional_params': tool['optional_params'],
                 'tags': tool['tags'],
-                'available': True
+                'available': True,
+                'is_bugged': name in self.bugged_tools
             }
-            for name, tool in self.tools.items()
-        }
+            
+            # Add bug info if tool is bugged
+            if name in self.bugged_tools:
+                tools_list[name]['bug_count'] = len(self.bugged_tools[name]['failures'])
+                tools_list[name]['last_failure'] = self.bugged_tools[name]['failures'][-1]['timestamp']
         
         if include_unavailable:
             for tool_name, error in self.unavailable_tools.items():
@@ -154,6 +197,7 @@ class ToolRegistry:
                     'optional_params': {},
                     'tags': [],
                     'available': False,
+                    'is_bugged': False,
                     'error': error
                 }
         
@@ -165,8 +209,10 @@ class ToolRegistry:
             'total_tools': len(self.tools) + len(self.unavailable_tools),
             'available_tools': len(self.tools),
             'unavailable_tools': len(self.unavailable_tools),
+            'bugged_tools': len(self.bugged_tools),
             'available_tool_names': list(self.tools.keys()),
-            'unavailable_tool_names': list(self.unavailable_tools.keys())
+            'unavailable_tool_names': list(self.unavailable_tools.keys()),
+            'bugged_tool_names': list(self.bugged_tools.keys())
         }
     
     def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> Any:
@@ -253,12 +299,17 @@ def require_auth(f):
 
 # User authentication (in production, use a proper database)
 # Generate password hash ONCE at module load time
-USERS = {
-    'admin': generate_password_hash(os.getenv('ADMIN_PASSWORD', 'admin123'))
-}
-
-# Add debug logging
-logger.info(f"Admin user hash generated: {USERS['admin'][:50]}...")
+# ONLY in the main reloader process to avoid multiple hash generations
+if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    USERS = {
+        'admin': generate_password_hash(os.getenv('ADMIN_PASSWORD', 'admin123'))
+    }
+    logger.info(f"Admin user hash generated: {USERS['admin'][:50]}...")
+else:
+    # In parent reloader process, use placeholder
+    USERS = {
+        'admin': generate_password_hash(os.getenv('ADMIN_PASSWORD', 'admin123'))
+    }
 
 @app.route('/auth/login', methods=['POST'])
 def login():
@@ -388,6 +439,18 @@ def execute_tool(tool_name: str):
             'error': f"Tool '{tool_name}' not found"
         }), 404
     
+    # Check if tool is bugged
+    if registry.is_tool_bugged(tool_name):
+        bug_info = registry.bugged_tools[tool_name]
+        return jsonify({
+            'success': False,
+            'error': f"Tool '{tool_name}' is marked as bugged",
+            'is_bugged': True,
+            'failure_count': len(bug_info['failures']),
+            'last_failure': bug_info['failures'][-1]['timestamp'],
+            'last_error': bug_info['failures'][-1]['error']
+        }), 503
+    
     # Check if authentication is required
     if tool['auth_required']:
         token = request.headers.get('Authorization')
@@ -407,41 +470,95 @@ def execute_tool(tool_name: str):
     
     # Execute tool
     try:
+        docker_result = None
+        docker_error = None
+        executed_in_docker = False
+        
         if use_docker and docker_executor.is_available():
-            # Get tool source code
-            import inspect
-            tool_source = inspect.getsource(tool['function'])
-            
-            # Extract requirements if specified
-            requirements = getattr(tool['function'], '_requirements', None)
-            
-            # Execute in Docker
-            result = docker_executor.execute_tool(
-                tool_code=tool_source,
-                tool_name=tool['name'],
-                params=params,
-                timeout=int(request.args.get('timeout', 30)),
-                requirements=requirements
-            )
-            
-            return jsonify({
-                'success': result.get('success', False),
-                'tool': tool_name,
-                'result': result.get('result'),
-                'error': result.get('error'),
-                'executed_in_docker': True,
-                'timestamp': datetime.utcnow().isoformat()
-            })
-        else:
-            # Fallback to direct execution
+            try:
+                # Get tool source code
+                import inspect
+                tool_source = inspect.getsource(tool['function'])
+                
+                # Extract requirements if specified
+                requirements = getattr(tool['function'], '_requirements', None)
+                
+                # Execute in Docker
+                docker_result = docker_executor.execute_tool(
+                    tool_code=tool_source,
+                    tool_name=tool['name'],
+                    params=params,
+                    timeout=int(request.args.get('timeout', 30)),
+                    requirements=requirements
+                )
+                
+                # Check if Docker execution was successful
+                if docker_result.get('success'):
+                    return jsonify({
+                        'success': True,
+                        'tool': tool_name,
+                        'result': docker_result.get('result'),
+                        'executed_in_docker': True,
+                        'timestamp': datetime.utcnow().isoformat()
+                    })
+                else:
+                    # Docker execution failed, log and fallback
+                    docker_error = docker_result.get('error', 'Unknown Docker execution error')
+                    logger.warning(f"Docker execution failed for tool '{tool_name}': {docker_error}")
+                    logger.info(f"Falling back to direct execution for tool '{tool_name}'")
+            except Exception as e:
+                # Docker execution threw exception, log and fallback
+                docker_error = str(e)
+                logger.warning(f"Docker execution exception for tool '{tool_name}': {docker_error}")
+                logger.info(f"Falling back to direct execution for tool '{tool_name}'")
+        
+        # Fallback to direct execution (if Docker wasn't used, failed, or not available)
+        try:
             result = registry.execute_tool(tool_name, params)
-            return jsonify({
+            
+            response = {
                 'success': True,
                 'tool': tool_name,
                 'result': result,
                 'executed_in_docker': False,
                 'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            # Include Docker failure info if applicable
+            if docker_error:
+                response['docker_fallback'] = True
+                response['docker_error'] = docker_error
+            
+            return jsonify(response)
+        except Exception as fallback_error:
+            # Direct execution also failed - mark as bugged if both failed
+            error_msg = str(fallback_error)
+            logger.error(f"Direct execution also failed for tool '{tool_name}': {error_msg}")
+            logger.error(traceback.format_exc())
+            
+            # Mark tool as bugged
+            registry.mark_tool_as_bugged(tool_name, {
+                'docker_error': docker_error,
+                'direct_error': error_msg,
+                'params': params,
+                'traceback': traceback.format_exc()
             })
+            
+            # Return detailed error with both failures
+            error_response = {
+                'success': False,
+                'error': f'Tool execution failed: {error_msg}',
+                'tool': tool_name,
+                'is_bugged': True,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            if docker_error:
+                error_response['docker_error'] = docker_error
+                error_response['docker_attempted'] = True
+            
+            return jsonify(error_response), 500
+        
     except ValueError as e:
         return jsonify({
             'success': False,
@@ -454,121 +571,25 @@ def execute_tool(tool_name: str):
             'error': 'Internal server error during tool execution',
             'details': str(e)
         }), 500
-    
-@app.route('/tools/search', methods=['POST'])
-def search_tools_endpoint():
-    """Proxy endpoint for tool search"""
-    try:
-        data = request.get_json()
-        
-        if not data or not data.get('query'):
-            return jsonify({'error': 'Missing query parameter'}), 400
-        
-        query = data.get('query')
-        max_results = min(int(data.get('max_results', 3)), 5)
-        category = data.get('category')
-        
-        # Fix: Call search_engine.search() instead of search_tools()
-        results = search_engine.search(query, top_k=max_results, category=category)
-        
-        # Format results for response
-        formatted_results = []
-        for result in results:
-            formatted_results.append({
-                'tool_name': result['tool_name'],
-                'description': result['tool_info']['description'],
-                'category': result['tool_info']['category'],
-                'relevance_score': result['relevance_score'],
-                'required_params': result['tool_info']['required_params'],
-                'optional_params': result['tool_info']['optional_params'],
-                'tags': result['tool_info'].get('tags', []),
-                'score_breakdown': result['score_breakdown']
-            })
-        
-        return jsonify({
-            'success': True,
-            'query': query,
-            'results_count': len(formatted_results),
-            'results': formatted_results
-        })
-    except Exception as e:
-        logger.error(f"Error in search endpoint: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
 
-@app.route('/tools/context/search', methods=['POST'])
-def get_search_context():
-    """Get LLM-friendly context for specific query"""
-    data = request.get_json()
-    
-    if not data or not data.get('query'):
-        return jsonify({'error': 'Missing query parameter'}), 400
-    
-    query = data.get('query')
-    max_tools = min(int(data.get('max_tools', 3)), 5)
-    
-    context = search_engine.get_tools_for_llm_context(query, max_tools=max_tools)
-    
-    return jsonify({
-        'query': query,
-        'context': context
-    })
-
-@app.route('/tools/reload', methods=['POST'])
+@app.route('/tools/<tool_name>/clear_bug', methods=['POST'])
 @require_auth
-def reload_tools():
-    """Reload all tools from the tools directory"""
-    global registry, search_engine
-    registry = ToolRegistry()
-    search_engine = ToolSearchEngine(registry)
+def clear_tool_bug(tool_name: str):
+    """Clear bug status for a tool"""
+    registry.clear_tool_bug_status(tool_name)
     return jsonify({
         'success': True,
-        'message': 'Tools reloaded successfully',
-        'availability': registry.get_availability_status()
+        'message': f"Bug status cleared for tool '{tool_name}'"
     })
 
-@app.route('/tools/context', methods=['GET'])
-def get_tools_context():
-    """Generate LLM-friendly context about available tools"""
-    category = request.args.get('category')
-    
-    tools = registry.list_tools()
-    if category:
-        tools = {k: v for k, v in tools.items() if v.get('category') == category and v.get('available', False)}
-    else:
-        # Only include available tools
-        tools = {k: v for k, v in tools.items() if v.get('available', False)}
-    
-    context = "Available Tools:\n\n"
-    for tool_name, tool_info in tools.items():
-        context += f"Tool: {tool_info['name']}\n"
-        context += f"Description: {tool_info['description']}\n"
-        context += f"Category: {tool_info['category']}\n"
-        context += f"Required Parameters: {tool_info['required_params']}\n"
-        context += f"Optional Parameters: {tool_info['optional_params']}\n"
-        if tool_info['tags']:
-            context += f"Tags: {', '.join(tool_info['tags'])}\n"
-        context += "\n"
-    
-    unavailable = registry.get_unavailable_tools()
-    if unavailable:
-        context += "\nUnavailable Tools:\n"
-        for tool_name, error in unavailable.items():
-            context += f"- {tool_name}: {error}\n"
-    
+@app.route('/tools/bugged', methods=['GET'])
+def get_bugged_tools():
+    """Get list of bugged tools"""
+    bugged = registry.get_bugged_tools()
     return jsonify({
-        'context': context,
-        'available_tools_count': len(tools),
-        'unavailable_tools_count': len(unavailable)
+        'bugged_tools': bugged,
+        'count': len(bugged)
     })
-
-@app.route('/docker/status', methods=['GET'])
-def docker_status():
-    """Get Docker executor status"""
-    return jsonify(docker_executor.get_status())
 
 @app.errorhandler(404)
 def not_found(error):
@@ -582,22 +603,23 @@ if __name__ == '__main__':
     # Create tools directory if it doesn't exist
     os.makedirs('./tools', exist_ok=True)
     
-    # Run server
-    port = int(os.getenv('TOOL_SERVER_PORT', 5001))
-    debug = os.getenv('FLASK_ENV') == 'development'
-    
-    logger.info(f"Starting Tool Server on port {port}")
-    logger.info(f"Debug mode: {debug}")
-    logger.info(f"Loaded {len(registry.tools)} tools")
-    
-    if registry.unavailable_tools:
-        logger.warning(f"Failed to load {len(registry.unavailable_tools)} tools")
+    # Only log startup info in the main reloader process
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        # Run server
+        port = int(os.getenv('TOOL_SERVER_PORT', 5001))
+        debug = os.getenv('FLASK_ENV') == 'development'
+        
+        logger.info(f"Starting Tool Server on port {port}")
+        logger.info(f"Debug mode: {debug}")
+        logger.info(f"Loaded {len(registry.tools)} tools")
+        
+        if registry.unavailable_tools:
+            logger.warning(f"Failed to load {len(registry.unavailable_tools)} tools")
 
-    # Run the app - reloader will monitor only the main app files, not tools directory
+    # Run the app
     app.run(
         host='0.0.0.0',
-        port=port,
-        debug=debug,
-        use_reloader=debug,  # Only use reloader in debug mode
-        extra_files=[] if debug else None  # Don't watch extra files
+        port=int(os.getenv('TOOL_SERVER_PORT', 5001)),
+        debug=os.getenv('FLASK_ENV') == 'development',
+        use_reloader=os.getenv('FLASK_ENV') == 'development'
     )
